@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Intune Endpoint Tool</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@5.x.x" rel="stylesheet" type="text/css" />
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@5.x.x/themes.css" rel="stylesheet" type="text/css" />
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.x.x" defer></script>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+
+<body class="transition-colors min-h-screen" x-data="AlpineData" x-init="init()" x-bind:data-theme="theme">
+  <div x-data="AzureAuth" x-init="init()">
+    <div class="flex flex-col items-center justify-center min-h-screen absolute inset-0 z-10 bg-base-100" x-show="!isAuthenticated && !$store.skipEntraAuth">
+      <button x-show="!isAuthenticated" @click="signIn()" class="btn btn-soft btn-wide text-lg mb-4">
+        <svg class="w-5 h-5" aria-label="Microsoft logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="32" height="32">
+          <rect x="32" y="32" width="208" height="208" fill="#f24f23" />
+          <rect x="272" y="32" width="208" height="208" fill="#7eba03" />
+          <rect x="32" y="272" width="208" height="208" fill="#3ca4ef" />
+          <rect x="272" y="272" width="208" height="208" fill="#f9ba00" />
+        </svg>
+        Login with Microsoft
+      </button>
+      <h1 x-show="!isAuthenticated && !$store.skipEntraAuth" class="text-2xl font-bold mb-2 text-center">You need to be authenticated to view this page.</h1>
+      <p x-show="errorMessage" class="text-red-500" x-text="errorMessage"></p>
+    </div>
+
+    <div x-show="isAuthenticated || $store.skipEntraAuth">
+      <!-- Title & toggle theme button -->
+      <header class="navbar bg-neutral shadow-md gap-2">
+        <div class="navbar-start">
+          <a class="btn btn-ghost text-2xl font-bold text-neutral-content" :href="window.location.origin">Intune Endpoint Tool</a>
+        </div>
+        <div class="navbar-center w-1/2">
+          <div class="join w-full">
+            <select x-model="searchType" class="join-item select select-bordered text-neutral-content">
+              <option value="windows">Windows (Autopilot)</option>
+              <option value="apple">Apple (ADE)</option>
+            </select>
+            <input @keydown.enter="search" x-model="searchData" type="search" placeholder="Search..." class="join-item input input-bordered w-full text-neutral-content" required />
+            <button @click="search" class="join-item btn bg-base-100 border-none hover:bg-base-200">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="navbar-end gap-2">
+          <select class="select" x-model="theme">
+            <option value="" disabled>Theme</option>
+            <!-- Dim is recommended for datk mode, and Silk for light mode -->
+            <option value="dim" selected>Dim</option>
+            <option value="silk">Silk</option>
+            <option value="abyss">Abyss</option>
+            <option value="acid">Acid</option>
+            <option value="aqua">Aqua</option>
+            <option value="autumn">Autumn</option>
+            <option value="black">Black</option>
+            <option value="bumblebee">Bumblebee</option>
+            <option value="business">Business</option>
+            <option value="caramellette">Caramellette</option>
+            <option value="coffee">Coffee</option>
+            <option value="corporate">Corporate</option>
+            <option value="cmyk">CMYK</option>
+            <option value="cupcake">Cupcake</option>
+            <option value="cyberpunk">Cyberpunk</option>
+            <option value="dark">Dark</option>
+            <option value="dracula">Dracula</option>
+            <option value="emerald">Emerald</option>
+            <option value="fantasy">Fantasy</option>
+            <option value="forest">Forest</option>
+            <option value="garden">Garden</option>
+            <option value="halloween">Halloween</option>
+            <option value="lemonade">Lemonade</option>
+            <option value="light">Light</option>
+            <option value="lofi">Lofi</option>
+            <option value="luxury">Luxury</option>
+            <option value="night">Night</option>
+            <option value="nord">Nord</option>
+            <option value="pastel">Pastel</option>
+            <option value="retro">Retro</option>
+            <option value="sunset">Sunset</option>
+            <option value="synthwave">Synthwave</option>
+            <option value="valentine">Valentine</option>
+            <option value="wireframe">Wireframe</option>
+            <option value="winter">Winter</option>
+          </select>
+          <button @click="loadAuditLog()" class="btn btn-soft btn-ghost">Audit Log</button>
+          <button x-show="pendingCount > 0" @click="approvalsPanel.open = true; pollPending(); (document.getElementById('approvalsDialog')).showModal()" class="btn btn-sm btn-warning">
+            ⚠ <span x-text="pendingCount"></span> Pending
+          </button>
+          <button x-show="!$store.skipEntraAuth" @click="signOut()" class="btn btn-soft btn-accent hover:bg-accent/50">Sign Out</button>
+        </div>
+      </header>
+
+      <!-- Main Content -->
+      <main class="flex flex-col items-center justify-start bg-base-100 w-full mt-24">
+        <section class="w-full max-w-2xl">
+
+          <!-- JSON Data Box -->
+          <fieldset x-show="dataList && dataList.length > 0" class="fieldset bg-base-200 border-base-300 rounded-box border p-4 w-full rounded-box shadow">
+            <legend class="fieldset-legend" x-text="currentData.intuneDeviceId ? 'Intune Device Record' : 'Not Yet Enrolled'"></legend>
+
+            <!-- JSON key/value fields -->
+            <template x-for="(value, name) in currentData" :key="name">
+              <!-- Hide fields shown elsewhere (currentEnrollmentProfile) or not user-facing (raw ids) -->
+              <span class="flex justify-between items-center w-full" x-id="['data-field']" x-show="!['currentEnrollmentProfile', 'intuneDeviceId', 'azureAdDeviceId', 'autopilotId', 'platform'].includes(name)">
+                <label class="label text-base" :for="$id('data-field')" x-text="{
+                  serialNumber: 'Serial Number',
+                  name: 'Device Name',
+                  model: 'Model',
+                  groupTag: 'Group Tag',
+                  assignedUserPrincipalName: 'Assigned User (Autopilot)',
+                  macAddress: 'Primary MAC Address',
+                  altMacAddress: 'Secondary MAC Address',
+                  username: 'Username',
+                  email: 'Email',
+                  building: 'Building',
+                  room: 'Room',
+                  assetTag: 'Asset Tag',
+                }[name] || name"></label>
+                <input type="text" class="input datafield-input" @keydown.enter="send" @input="currentData[name] = $event.target.value" :id="$id('data-field')" :value="value" :disabled="['serialNumber', 'name', 'model', 'assignedUserPrincipalName', 'macAddress', 'altMacAddress'].includes(name)" />
+              </span>
+            </template>
+
+            <!-- Enrollment Profile Dropdown -->
+            <section x-data="FetchEnrollmentProfiles({ getSearchType: () => searchType, getDataList: () => dataList })">
+              <div x-show="!showProfileDropdown" class="flex justify-between items-center w-full">
+                <label class="label text-base">Enrollment Profile</label>
+                <div class="flex items-center gap-2">
+                  <p class="text-base" x-text="currentData.currentEnrollmentProfile"></p>
+                  <button class="btn btn-sm btn-soft" @click="showProfileDropdown = true">Change</button>
+                </div>
+              </div>
+              <div x-show="showProfileDropdown" class="flex justify-between items-center w-full">
+                <label class="label text-base">Enrollment Profile</label>
+                <select class="select" name="profileDropdown" x-model="updateToProfile" @change="(() => { const p = profiles.find(pr => String(pr.id) === $event.target.value); if (p) { currentData.currentEnrollmentProfile = p.displayName; } showProfileDropdown = false; })()">
+                  <option value="" selected disabled>Select Enrollment Profile</option>
+                  <template x-for="profile in profiles" :key="profile.id">
+                    <option :value="profile.id" x-text="profile.displayName"></option>
+                  </template>
+                </select>
+              </div>
+            </section>
+
+            <!-- Only show error message if there is one -->
+            <template x-if="errorMessage">
+              <p x-show="errorMessage" class="text-red-500 text-base text-center w-full mt-8" x-text="errorMessage"></p>
+            </template>
+
+            <!-- Show success message if there is one -->
+            <template x-if="successMessage">
+              <p x-show="successMessage" class="text-green-500 text-base text-center w-full mt-8" x-text="successMessage"></p>
+            </template>
+
+            <!-- Page Indicator -->
+            <template x-if="dataList.length > 1">
+              <div class="flex justify-center items-center mt-8">
+                <span class="text-base-content font-semibold" x-text="`Page ${dataIndex + 1} of ${dataList.length}`"></span>
+              </div>
+            </template>
+          </fieldset>
+
+          <!-- Pagination & Send -->
+          <nav x-show="dataList && dataList.length > 0" class="mt-2 grid gap-1 mb-20">
+            <!-- First row: 3 main buttons -->
+            <div class="join grid grid-cols-3 gap-1">
+              <button @click="prev" class="join-item btn btn-soft">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                </svg>
+                Previous
+              </button>
+              <button @click="send" class="join-item btn btn-soft btn-success">
+                Send
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14m-7-7l7 7-7 7" />
+                </svg>
+              </button>
+              <button @click="next" class="join-item btn btn-soft">
+                Next
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </div>
+
+            <!-- Second row: Just change the grid-cols value, and add more :) -->
+            <div class="join grid grid-cols-2 gap-1">
+              <button @click="erase" class="join-item btn btn-soft btn-error">
+                Wipe Device
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+              <button @click="retire" class="join-item btn btn-soft btn-warning">
+                Retire
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2a4 4 0 018 0v2M9 17H7a2 2 0 01-2-2v-5a2 2 0 012-2h10a2 2 0 012 2v5a2 2 0 01-2 2h-2M9 17v1a3 3 0 006 0v-1" />
+                </svg>
+              </button>
+            </div>
+          </nav>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Approval request dialog (Admin A submits wipe/retire for approval) -->
+  <dialog id="approvalRequestDialog" class="modal">
+    <div class="modal-box">
+      <h3 class="font-bold text-lg mb-2" x-text="approvalModal.action === 'wipe' ? 'Request Wipe Approval' : 'Request Retire Approval'"></h3>
+      <template x-if="approvalModal.device">
+        <div class="bg-base-200 rounded-box p-3 mb-4 text-sm space-y-1">
+          <p><span class="font-semibold">Serial:</span> <span class="font-mono" x-text="approvalModal.device.serialNumber"></span></p>
+          <p><span class="font-semibold">Asset Tag:</span> <span x-text="approvalModal.device.assetTag"></span></p>
+          <p><span class="font-semibold">Name:</span> <span x-text="approvalModal.device.name"></span></p>
+        </div>
+      </template>
+      <p class="text-sm mb-2">Provide a justification for this action. A second admin must approve before it executes.</p>
+      <textarea class="textarea textarea-bordered w-full" rows="3" placeholder="Reason for wipe (e.g. lost device, end of life, re-imaging...)" x-model="approvalModal.justification"></textarea>
+      <p x-show="approvalModal.error" class="text-error text-sm mt-2" x-text="approvalModal.error"></p>
+      <div class="modal-action">
+        <form method="dialog"><button class="btn btn-ghost">Cancel</button></form>
+        <button class="btn btn-warning" :disabled="approvalModal.submitting" @click="submitApproval()">
+          <span x-text="approvalModal.submitting ? 'Submitting…' : 'Submit for Approval'"></span>
+        </button>
+      </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+  </dialog>
+
+  <!-- Approvals panel (Admin B reviews and acts on pending requests) -->
+  <dialog id="approvalsDialog" class="modal">
+    <div class="modal-box w-11/12 max-w-2xl">
+      <h3 class="font-bold text-lg mb-4">Pending Approvals</h3>
+      <template x-if="pendingApprovals.length === 0">
+        <p class="text-sm text-base-content/60">No pending approvals.</p>
+      </template>
+      <template x-for="item in pendingApprovals" :key="item.id">
+        <div class="border border-base-300 rounded-box p-4 mb-3 space-y-2">
+          <div class="flex justify-between items-start">
+            <div class="flex items-center gap-2">
+              <span class="badge badge-warning" x-text="item.action.toUpperCase()"></span>
+              <span class="font-mono text-sm font-semibold" x-text="item.device_serial"></span>
+              <span class="text-xs text-base-content/60" x-text="`Asset: ${item.device_asset_tag ?? 'N/A'}`"></span>
+            </div>
+            <span class="text-xs text-base-content/60" x-text="item.created_at"></span>
+          </div>
+          <p class="text-sm"><span class="font-semibold">Requested by:</span> <span x-text="item.requester"></span></p>
+          <p class="text-sm"><span class="font-semibold">Justification:</span> <span class="italic" x-text="item.justification || 'No justification provided'"></span></p>
+          <div class="flex gap-2 justify-end pt-1">
+            <button class="btn btn-sm btn-error btn-outline" @click="rejectRequest(item.id)">Reject</button>
+            <button class="btn btn-sm btn-success" @click="approveRequest(item.id)">Approve &amp; Execute</button>
+          </div>
+        </div>
+      </template>
+      <p x-show="approvalsPanel.error" class="text-error text-sm mt-2" x-text="approvalsPanel.error"></p>
+      <div class="modal-action">
+        <form method="dialog"><button class="btn">Close</button></form>
+      </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+  </dialog>
+
+  <!-- Audit log dialog -->
+  <dialog id="auditLogDialog" class="modal">
+    <div class="modal-box w-11/12 max-w-4xl">
+      <h3 class="font-bold text-lg mb-4">Audit Log</h3>
+      <div class="overflow-x-auto max-h-96">
+        <table class="table table-xs table-zebra w-full">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Device</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="entry in auditLog" :key="entry.id">
+              <tr>
+                <td class="font-mono text-xs" x-text="entry.timestamp"></td>
+                <td x-text="entry.actor ?? '—'"></td>
+                <td><span class="badge badge-sm" :class="entry.result === 'success' ? 'badge-success' : 'badge-error'" x-text="entry.action"></span></td>
+                <td class="font-mono text-xs" x-text="entry.device_serial ?? entry.device_id ?? '—'"></td>
+                <td x-text="entry.result"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <div class="modal-action">
+        <form method="dialog"><button class="btn">Close</button></form>
+      </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+  </dialog>
+
+  <!-- Confirmation modal -->
+  <dialog id="confirmDialog" class="modal">
+    <div class="modal-box">
+      <h3 class="font-bold text-lg mb-4" x-text="confirmModal.title"></h3>
+      <ul class="list-disc list-inside space-y-1">
+        <template x-for="(line, i) in confirmModal.lines" :key="i">
+          <li class="text-sm" x-text="line"></li>
+        </template>
+      </ul>
+      <div class="modal-action">
+        <form method="dialog">
+          <button class="btn btn-ghost">Cancel</button>
+        </form>
+        <button class="btn btn-error" @click="document.getElementById('confirmDialog').close(); if (confirmModal.onConfirm) confirmModal.onConfirm()">
+          Confirm
+        </button>
+      </div>
+    </div>
+    <form method="dialog" class="modal-backdrop">
+      <button>close</button>
+    </form>
+  </dialog>
+
+  <script type="module" src="main.js" defer></script>
+</body>
+
+</html>

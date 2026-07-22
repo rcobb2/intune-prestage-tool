@@ -1,0 +1,40 @@
+services:
+  client:
+    network_mode: "host"
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+      no_cache: true
+    env_file:
+      - .env
+    volumes:
+      - ./client:/app/client
+      - ./certs/server.cert:/app/server.cert:ro
+      - ./certs/server.key:/app/server.key:ro
+    ports:
+      - "443:443"
+    develop:
+      watch:
+        - path: ./client
+          action: sync
+          target: /app/client
+
+  server:
+    network_mode: "host"
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      no_cache: true
+    env_file:
+      - .env
+    volumes:
+      - ./server:/app
+      - ./certs/server.cert:/app/server.cert:ro
+      - ./certs/server.key:/app/server.key:ro
+    ports:
+      - "8443:8443"
+    develop:
+      watch:
+        - path: ./server
+          action: sync
+          target: /app

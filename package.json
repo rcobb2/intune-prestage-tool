@@ -1,0 +1,30 @@
+{
+  "name": "intune-prestage-tool",
+  "module": "server.ts",
+  "devDependencies": {
+    "@types/alpinejs": "^3.13.11",
+    "@types/alpinejs__persist": "^3.13.4",
+    "@types/bun": "latest",
+    "@types/jest": "^29.5.12",
+    "axios-mock-adapter": "^1.22.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5.8.3"
+  },
+  "private": true,
+  "scripts": {
+    "test": "jest --passWithNoTests"
+  },
+  "type": "module",
+  "dependencies": {
+    "@alpinejs/persist": "^3.14.9",
+    "@azure/msal-browser": "^4.16.0",
+    "alpinejs": "^3.14.9",
+    "axios": "^1.11.0",
+    "axios-retry": "^4.0.0",
+    "jose": "^6.2.3",
+    "pino": "^10.3.1"
+  }
+}

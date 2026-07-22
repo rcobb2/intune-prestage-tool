@@ -1,0 +1,16 @@
+# As of development, bun is v1.2.16
+FROM oven/bun:1.2-alpine AS build
+
+# Set the working directory
+WORKDIR /app
+
+# Install dependencies
+COPY package.json tsconfig.json 404.html ./
+RUN bun install --production
+
+# Copy server code
+COPY server/. .
+
+EXPOSE 8443
+
+CMD [ "bun", "run", "server.ts" ]
