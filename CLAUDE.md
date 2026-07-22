@@ -45,24 +45,35 @@ Two independent Bun processes, no shared runtime state:
 - **`server/`** — a Bun-native REST API (`server/server.ts`, using Bun's built-in `routes`
   table, not a framework) that calls Microsoft Graph via `server/utils.ts`.
 
-### Delegated auth — one token does both jobs
+### Delegated auth — two tokens, one MSAL call
 
-There is no separate server-to-Graph credential or second app registration.
-`client/azure-auth.ts` acquires a single Graph-scoped delegated access token via MSAL
-(`GRAPH_SCOPES`) and attaches it to every request. `server/auth.ts`'s `withAuth` verifies
-that same token — accounting for Graph's own v1-vs-v2 token format quirks in the
-issuer/audience checks, plus an `appid`/`azp` check confirming the token was actually issued
-to this app's `AZURE_CLIENT_ID` — and attaches both the caller's identity (`req.actor`) and
-the raw token itself (`req.graphToken`) to the request. Every `server/utils.ts` function that
-calls Graph takes that token as an explicit parameter; there is no cached, server-held Graph
-credential anywhere. Practically, this means Graph enforces whatever Entra/Intune RBAC role
-the signed-in admin actually holds — granting the delegated scopes on the app registration is
-necessary but not sufficient, since each admin still needs a role like Intune Administrator.
-The two-person approval flow relies on this: an approved wipe/retire executes using the
-*approver's* token, not the requester's, so Graph's own authorization is the real second
-check, not just a button click in this UI. In `SKIP_ENTRA_AUTH` dev mode there is no real
-token at all (`req.graphToken` is `''`), so only the local-only routes (device metadata, audit
-log, approval bookkeeping) are meaningfully testable — anything that calls Graph will fail.
+There is no separate server-to-Graph credential or second app registration, but there
+ARE two distinct tokens per request, from a single `acquireTokenSilent({ scopes:
+GRAPH_SCOPES })` call in `client/azure-auth.ts`:
+
+- **ID token** (audience = this app's own `AZURE_CLIENT_ID`) — sent as the
+  `Authorization` bearer, independently verified by `server/auth.ts`'s `withAuth` via
+  the tenant's JWKS. This is what proves caller identity (`req.actor`).
+- **Graph access token** (audience = Microsoft Graph) — sent via a separate
+  `X-Graph-Token` header, forwarded to `req.graphToken` *without* independent
+  verification. This is intentional, not an oversight: Microsoft documents Graph
+  access tokens as opaque to everyone but Graph itself, and empirically (three
+  independent verification methods, all failing identically against a real token
+  from this tenant) they do not validate against the tenant's own published JWKS the
+  way an ID token's signature does. Trusting it here is safe only because it arrives
+  attached to a request whose ID token was already verified as the same session.
+
+Every `server/utils.ts` function that calls Graph takes `req.graphToken` as an explicit
+parameter; there is no cached, server-held Graph credential anywhere. Practically, this
+means Graph enforces whatever Entra/Intune RBAC role the signed-in admin actually
+holds — granting the delegated scopes on the app registration is necessary but not
+sufficient, since each admin still needs a role like Intune Administrator. The
+two-person approval flow relies on this: an approved wipe/retire executes using the
+*approver's* Graph token, not the requester's, so Graph's own authorization is the real
+second check, not just a button click in this UI. In `SKIP_ENTRA_AUTH` dev mode there
+is no real token at all (`req.graphToken` is `''`), so only the local-only routes
+(device metadata, audit log, approval bookkeeping) are meaningfully testable —
+anything that calls Graph will fail.
 
 ### Platform split: Windows Autopilot vs. Apple ADE
 

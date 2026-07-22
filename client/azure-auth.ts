@@ -6,15 +6,20 @@ const SKIP_AUTH = process.env.SKIP_ENTRA_AUTH === 'true';
 import axios from 'axios';
 
 // Delegated Microsoft Graph permissions this tool needs — requested at sign-in so
-// consent is captured up front, then used both to authenticate to our own server
-// (see server/auth.ts: the access token itself, not a separate ID token, is what the
-// server verifies) and to call Graph directly. There is no separate service
-// principal — the signed-in admin's own Entra/Intune RBAC role is what actually
-// authorizes each Graph call. Verify these exact permission strings are added as
-// DELEGATED (not Application) API permissions on the AZURE_CLIENT_ID app
-// registration and admin-consented; each admin using this tool still needs a role
-// (e.g. Intune Administrator) that grants the underlying rights, since holding the
-// scope alone isn't enough for Graph to authorize the call.
+// consent is captured up front, then forwarded to the server (via X-Graph-Token, see
+// the request interceptor below) to call Graph directly on the signed-in admin's own
+// behalf. There is no separate service principal. Verify these exact permission
+// strings are added as DELEGATED (not Application) API permissions on the
+// AZURE_CLIENT_ID app registration and admin-consented; each admin using this tool
+// still needs a role (e.g. Intune Administrator) that grants the underlying rights,
+// since holding the scope alone isn't enough for Graph to authorize the call.
+//
+// Note: the ID token (Authorization header) and this Graph access token are two
+// separate tokens from the same acquireTokenSilent call. The server independently
+// verifies the ID token but only forwards the Graph token — Microsoft Graph access
+// tokens are documented as opaque to everyone but Graph itself and are not
+// guaranteed to validate against the tenant's published JWKS the way an ID token's
+// signature does.
 const GRAPH_SCOPES = [
   'DeviceManagementManagedDevices.ReadWrite.All',
   'DeviceManagementServiceConfig.ReadWrite.All',
@@ -49,12 +54,15 @@ if (!SKIP_AUTH) {
     const accounts = msalInstance.getAllAccounts();
     if (accounts.length === 0) return config;
     try {
-      // This access token is forwarded as-is: the server verifies it (auth.ts) AND
-      // uses it to call Microsoft Graph on the signed-in admin's own behalf — see the
-      // GRAPH_SCOPES comment above.
+      // One acquireTokenSilent call returns both tokens: idToken (audience = this
+      // app, verified by the server for identity) and accessToken (audience =
+      // Graph, forwarded unverified — see the GRAPH_SCOPES comment above).
       const result = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
+      if (result?.idToken) {
+        config.headers.set('Authorization', `Bearer ${result.idToken}`);
+      }
       if (result?.accessToken) {
-        config.headers.set('Authorization', `Bearer ${result.accessToken}`);
+        config.headers.set('X-Graph-Token', result.accessToken);
       }
     } catch (err) {
       // Leave the request unauthenticated; the server will reject it with 401

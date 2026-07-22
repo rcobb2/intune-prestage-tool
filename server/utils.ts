@@ -69,7 +69,7 @@ export const CORS_HEADERS: ResponseInit = {
   headers: {
     "Access-Control-Allow-Origin": clientOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, X-User-Name",
+    "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, X-User-Name, X-Graph-Token",
     "Access-Control-Allow-Credentials": "false",
     "Accept": "application/json",
     "Content-Type": "application/json",

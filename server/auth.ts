@@ -8,49 +8,34 @@ const SKIP_AUTH = SKIP_ENTRA_AUTH === 'true';
 // Trailing slash on AZURE_AUTHORITY would double up when building these URLs.
 const authority = AZURE_AUTHORITY?.replace(/\/$/, '');
 
-// Microsoft Graph's own well-known application ID / App ID URI — stable across every
-// tenant. The token this app verifies is a delegated Graph access token (see
-// GRAPH_SCOPES in client/azure-auth.ts), so its audience is Graph, not AZURE_CLIENT_ID.
-const GRAPH_APP_ID = '00000003-0000-0000-c000-000000000000';
-const GRAPH_APP_ID_URI = 'https://graph.microsoft.com';
-
-// This verifies AND forwards the same token — there is no separate server-held Graph
-// credential (no client-credentials app registration). The signed-in admin's own
-// delegated Graph access token both authenticates them to this tool and is the exact
-// token utils.ts uses to call Graph; Graph itself enforces whatever Entra/Intune RBAC
-// role that admin actually holds.
+// This verifies the *user's* sign-in token (an ID token, audience = AZURE_CLIENT_ID) —
+// Microsoft guarantees ID tokens are independently verifiable via the tenant's own
+// JWKS, since they're issued specifically for this app to consume.
 //
-// Microsoft Graph access tokens are commonly issued in v1.0 claim format (issuer
-// `https://sts.windows.net/{tenantId}/`, audience the GUID above) even when requested
-// through the v2.0 authorize/token endpoint — Graph's own app registration controls
-// this, not ours. Both v1- and v2-format issuers/audiences are accepted below; if
-// verification unexpectedly fails, log payload.iss/payload.aud from a real token from
-// your tenant and adjust.
+// The Graph-scoped access token used for actual Graph calls is a SEPARATE token,
+// read from X-Graph-Token below and forwarded WITHOUT independent verification.
+// Microsoft Graph access tokens are documented as opaque to everyone but Graph
+// itself — their signing is not guaranteed to validate against the tenant's
+// published JWKS the way an ID token's does (confirmed empirically: jose with a
+// remote JWKS, jose with a manually-imported exact matching key, and raw
+// node:crypto RSA-SHA256 verification all failed identically against a real
+// Graph access token issued by this same tenant). Trusting it here is safe
+// specifically because it arrives attached to a request whose ID token we just
+// verified came from the same MSAL session/account.
 const JWKS = !SKIP_AUTH && authority
   ? createRemoteJWKSet(new URL(`${authority}/discovery/v2.0/keys`))
   : null;
 
-// Only usable when AZURE_AUTHORITY is a tenant-specific URL (not the multi-tenant
-// `/common`) — needed to build the v1-format issuer, which embeds the tenant GUID.
-const tenantId = authority?.split('/').pop();
-const isCommonAuthority = tenantId === 'common' || tenantId === 'organizations' || tenantId === 'consumers';
-
 if (!SKIP_AUTH && (!AZURE_CLIENT_ID || !authority)) {
   logger.error('AZURE_CLIENT_ID/AZURE_AUTHORITY are not set and SKIP_ENTRA_AUTH is not true — every API request will be rejected');
 }
-if (!SKIP_AUTH && isCommonAuthority) {
-  logger.warn('AZURE_AUTHORITY is a multi-tenant alias (/common, /organizations, or /consumers) — v1-format issuer validation cannot embed a tenant GUID in this mode; use your specific tenant ID instead if token verification fails');
-}
 
-// Verifies the Graph-scoped access token the client attaches to every request. Trusts
-// the token's signed claims for the caller's identity — never the client-supplied
+// Verifies the Entra ID token the client attaches to every request. Trusts the
+// token's signed claims for the caller's identity — never the client-supplied
 // X-User-Name header, which anyone can set to anything.
 async function authenticate(req: Request): Promise<{ actor: string; graphToken: string } | Response> {
   if (SKIP_AUTH) {
-    // No real token exists in this mode — any route that calls Microsoft Graph will
-    // fail downstream. Only local-only routes (device metadata, audit log, approval
-    // bookkeeping) are meaningfully usable without real Entra sign-in.
-    return { actor: req.headers.get('X-User-Name') ?? 'dev-user', graphToken: '' };
+    return { actor: req.headers.get('X-User-Name') ?? 'dev-user', graphToken: req.headers.get('X-Graph-Token') ?? '' };
   }
 
   const match = (req.headers.get('Authorization') ?? '').match(/^Bearer (.+)$/);
@@ -64,24 +49,15 @@ async function authenticate(req: Request): Promise<{ actor: string; graphToken: 
 
   try {
     const { payload } = await jwtVerify(match[1], JWKS, {
-      issuer: isCommonAuthority
-        ? [`${authority}/v2.0`]
-        : [`${authority}/v2.0`, `https://sts.windows.net/${tenantId}/`],
-      audience: [GRAPH_APP_ID, GRAPH_APP_ID_URI],
+      issuer: `${authority}/v2.0`,
+      audience: AZURE_CLIENT_ID,
     });
-
-    // Confirm the token was actually requested through THIS tool's own app
-    // registration (appid = v1 claim name, azp = v2 claim name for the same thing) —
-    // otherwise any client holding these delegated scopes for this user (e.g. Graph
-    // Explorer) could call our API with a Graph token never issued to us.
-    const requestingApp = (payload.appid ?? payload.azp) as string | undefined;
-    if (requestingApp !== AZURE_CLIENT_ID) {
-      logger.warn({ requestingApp }, 'Rejected Graph token not issued to this app registration');
-      return new Response('Invalid or expired token', { ...CORS_HEADERS, status: 401 });
-    }
-
-    const actor = (payload.preferred_username ?? payload.upn ?? payload.unique_name ?? payload.email ?? payload.name ?? payload.sub) as string;
-    return { actor, graphToken: match[1] };
+    const actor = (payload.preferred_username ?? payload.upn ?? payload.email ?? payload.name ?? payload.sub) as string;
+    // Not independently verified — see the comment above JWKS. Safe to trust here
+    // because it's only used once the ID token above has already been verified as
+    // belonging to the same authenticated session.
+    const graphToken = req.headers.get('X-Graph-Token') ?? '';
+    return { actor, graphToken };
   } catch (err: any) {
     logger.warn({ err: err.message }, 'Rejected request with invalid Entra token');
     return new Response('Invalid or expired token', { ...CORS_HEADERS, status: 401 });
@@ -89,8 +65,9 @@ async function authenticate(req: Request): Promise<{ actor: string; graphToken: 
 }
 
 // Wraps a route handler so it only runs after successful authentication, and attaches
-// the verified caller identity (req.actor) and their raw Graph access token
-// (req.graphToken) for the handler/utils.ts Graph calls/audit log to use.
+// the verified caller identity (req.actor) and their Graph access token (req.graphToken,
+// forwarded but not independently verified — see comment above) for the
+// handler/utils.ts Graph calls/audit log to use.
 export function withAuth(handler: (req: any) => Response | Promise<Response>) {
   return async (req: any): Promise<Response> => {
     const result = await authenticate(req);

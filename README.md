@@ -45,7 +45,7 @@ replaced wholesale on every write) does not map cleanly onto Intune:
 
 | Layer | Status |
 |---|---|
-| Entra ID user auth (`server/auth.ts`, `client/azure-auth.ts`) | Fully implemented — delegated Graph access token doubles as the sign-in credential; no separate service principal |
+| Entra ID user auth (`server/auth.ts`, `client/azure-auth.ts`) | Fully implemented — one MSAL call yields both an ID token (verified, proves identity) and a Graph access token (forwarded unverified, since Graph tokens aren't independently verifiable by design); no separate service principal |
 | Audit log & two-person approval workflow (`server/db.ts`, approval routes) | Fully implemented — approving a request executes the action using the *approver's* own delegated Graph token, not the original requester's |
 | Device search (`searchDevices`) | Implemented — enrolled devices via `managedDevices`, falling back to Windows Autopilot / Apple ADE pre-enrollment identities. The `contains()` filter used for substring search needs your tenant to support Graph's advanced query capabilities on `managedDevices`; if not, it's caught and logged, and pre-enrollment fallback still runs |
 | Enrollment profile list (`getEnrollmentProfiles`) | Implemented for both platforms — Windows via `windowsAutopilotDeploymentProfiles`, Apple via `depOnboardingSettings`/`enrollmentProfiles` (lower confidence on Apple, see comment) |
