@@ -50,7 +50,7 @@ replaced wholesale on every write) does not map cleanly onto Intune:
 | Device search (`searchDevices`) | Implemented — enrolled devices via `managedDevices`, falling back to Windows Autopilot / Apple ADE pre-enrollment identities. The `contains()` filter used for substring search needs your tenant to support Graph's advanced query capabilities on `managedDevices`; if not, it's caught and logged, and pre-enrollment fallback still runs |
 | Enrollment profile list (`getEnrollmentProfiles`) | Implemented for both platforms — Windows via `windowsAutopilotDeploymentProfiles`, Apple via `depOnboardingSettings`/`enrollmentProfiles` (lower confidence on Apple, see comment) |
 | Current profile assignment (`getEnrollmentProfileAssignment`) | Implemented for Windows; returns `'N/A'` for Apple (**stubbed** — TODO in `server/utils.ts`) |
-| Assign / remove profile (`assignDeviceToProfile`, `removeDeviceFromProfile`) | Implemented for Windows using the bind + `assign` action pattern; **stubbed** (throws) for Apple — the exact per-device Graph action isn't confirmed, and a mutating write shouldn't be guessed at |
+| Assign / remove profile (`assignDeviceToProfile`, `removeDeviceFromProfile`) | Implemented for Windows, two modes via `AUTOPILOT_ASSIGNMENT_MODE` — `direct` (bind + `assign` action) or `groupTag` (sets Autopilot Group Tag, relies on a pre-existing dynamic Entra ID group to actually assign the profile; see Requirements below). **Stubbed** (throws) for Apple — the exact per-device Graph action isn't confirmed, and a mutating write shouldn't be guessed at |
 | Wipe (`wipeDevice`) | Implemented — `managedDevices/{id}/wipe` with `keepEnrollmentData` defaulted `true` so Autopilot devices reprovision |
 | Retire (`retireDevice`) | Implemented — Intune retire, then best-effort cleanup of the Windows Autopilot identity and the Entra ID device object |
 | GLPI / ClearPass retirement cleanup steps | Fully implemented — reused as-is, these are vendor-agnostic |
@@ -95,6 +95,29 @@ both tools default to the same 443/8443 pair.
 ### Dev mode without Entra auth
 Set `SKIP_ENTRA_AUTH=true` in `.env` to bypass the Microsoft login screen during local
 development — same flag and behavior as the Jamf tool.
+
+### Group-based Autopilot profile assignment (`AUTOPILOT_ASSIGNMENT_MODE=groupTag`)
+Many tenants assign Windows Autopilot deployment profiles to Entra ID groups rather than
+individual devices. This tool does not create, convert, or otherwise manage those groups
+itself — that's real production identity configuration, and an in-place static→dynamic
+group conversion silently *replaces* membership rather than merging it, which can drop
+existing devices out of policies/apps scoped to the same group. Instead:
+
+1. For each Windows Autopilot deployment profile you want this mode to work with, create a
+   **new** Dynamic Device security group in Entra ID with a membership rule matching Group
+   Tag = that profile's exact display name, e.g. for a profile named `EMPLOYEE`:
+   ```
+   (device.devicePhysicalIds -any (_ -eq "[OrderID]:EMPLOYEE"))
+   ```
+2. Add that new group to the profile's existing **Assignments** (Intune admin center →
+   Devices → Enrollment → Windows enrollment → Deployment Profiles → *profile* →
+   Assignments) — **alongside** any existing static group, not replacing it.
+3. Set `AUTOPILOT_ASSIGNMENT_MODE=groupTag` in `.env`. Devices assigned through this tool
+   from then on get their Group Tag set and pick up the dynamic group (and therefore the
+   profile) automatically — allow a few minutes for dynamic membership evaluation.
+4. Existing devices in an old static group are unaffected and keep working as before;
+   backfilling their Group Tag and retiring the static group is optional future cleanup,
+   not required for this mode to work.
 
 ## Architecture
 Two Bun processes, same as the Jamf tool:

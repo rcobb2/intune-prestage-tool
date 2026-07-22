@@ -83,9 +83,16 @@ function before extending it:
 
 - **Windows** (`windowsAutopilotDeviceIdentities` / `windowsAutopilotDeploymentProfiles`):
   fully implemented — search, list/assign/remove enrollment profile, wipe, retire.
-  `assignDeviceToProfile` binds a deployment profile via `@odata.bind` then calls the
-  identity's `assign` action; `removeDeviceFromProfile` deletes the `deploymentProfile/$ref`.
-- **Apple** (`depOnboardingSettings` / `importedAppleDeviceIdentities`): read paths
+  `assignDeviceToProfile`/`removeDeviceFromProfile` have two modes switched by
+  `AUTOPILOT_ASSIGNMENT_MODE`: `'direct'` (default) binds a deployment profile via
+  `@odata.bind` then calls the identity's `assign` action, and unbinds via
+  `deploymentProfile/$ref` DELETE; `'groupTag'` instead calls `updateDeviceProperties` to
+  set/clear the Autopilot Group Tag (= the target profile's own `displayName`), for
+  tenants (e.g. this one, Colgate) that assign profiles to Entra ID groups rather than
+  individual devices — see the README's "Group-based Autopilot profile assignment"
+  section for the one-time manual Entra/Intune group setup this mode depends on. This
+  tool never creates/converts those groups itself.
+- **Apple** (`depOnboardingSettings` / `importedDeviceIdentities`): read paths
   (list profiles, search) are implemented but lower-confidence (this corner of Graph beta is
   poorly documented). `assignDeviceToProfile`/`removeDeviceFromProfile` for `'apple'`
   deliberately `throw` — the correct per-device Graph mutation isn't confirmed, and this

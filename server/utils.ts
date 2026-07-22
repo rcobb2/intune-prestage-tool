@@ -51,6 +51,14 @@ const {
 
   CLIENT_HOSTNAME,
   CLIENT_PORT,
+
+  // 'direct' (default): PATCH deploymentProfile@odata.bind + POST /assign on the
+  // device's own Autopilot identity — Jamf-prestage-like, requires no groups.
+  // 'groupTag': set the Autopilot Group Tag instead, and rely on a pre-existing
+  // dynamic Entra ID group (rule matched on that tag) to drive the actual
+  // assignment. Required when a tenant assigns Windows Autopilot deployment
+  // profiles to groups rather than individual devices — see assignDeviceToProfile.
+  AUTOPILOT_ASSIGNMENT_MODE,
 } = process.env;
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
@@ -465,14 +473,24 @@ export async function getEnrollmentProfileAssignment(serialNumber: string, platf
 // equivalent — but the assignment MODEL is fundamentally different from Jamf's flat
 // serial-number scope list, so this is not a drop-in port).
 //
-// Windows: uses Graph's documented per-device direct-assignment action — bind the
+// Windows has two real assignment models, switched via AUTOPILOT_ASSIGNMENT_MODE:
+//
+// 'direct' (default): Graph's documented per-device direct-assignment action — bind the
 // target deploymentProfile onto the Autopilot identity via @odata.bind, then invoke the
 // `assign` action to apply it. This is the closest Intune analog to Jamf's "PUT this one
 // serial into this one prestage" semantics, and does not require pre-existing dynamic/
-// static Entra ID groups. If your tenant instead assigns Autopilot profiles to groups via
-// Group Tag, use updateDeviceProperties to set groupTag on the identity instead — the
-// group's dynamic membership rule (and the profile-to-group assignment) already exists
-// in that setup, so this call alone is sufficient there too.
+// static Entra ID groups.
+//
+// 'groupTag': some tenants (confirmed: Colgate) assign Autopilot deployment profiles to
+// Entra ID groups instead — a device gets a profile by being a member of the group the
+// profile is assigned to, and this tool has no business creating/converting those groups
+// itself (see the plan doc for why an in-place static→dynamic conversion is dangerous:
+// it replaces membership rather than merging, which would drop every device that doesn't
+// already carry a matching tag). What this tool CAN safely do is set the Autopilot Group
+// Tag via updateDeviceProperties, and rely on a pre-existing dynamic group (rule matched
+// on that tag, added to the profile's assignment) to pick the device up automatically.
+// Tag value = the target profile's own displayName exactly, so no separate profile→tag
+// mapping needs to live in this codebase.
 //
 // Apple ADE: Graph does not expose a per-device "assign" call the way Jamf's PUT scope
 // endpoint does, and the exact assignment action for depOnboardingSettings profiles is
@@ -484,6 +502,22 @@ export async function assignDeviceToProfile(profileId: string, serialNumber: str
     const identity = await findAutopilotIdentityBySerial(serialNumber, token);
     if (!identity) {
       throw new Error(`No Windows Autopilot device identity found for serial ${serialNumber}`);
+    }
+
+    if (AUTOPILOT_ASSIGNMENT_MODE === 'groupTag') {
+      const profileResp = await axios.get(
+        `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeploymentProfiles/${profileId}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const updateUrl = `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities/${identity.id}/updateDeviceProperties`;
+      const updateBody = { groupTag: profileResp.data.displayName };
+
+      if (dryRun) {
+        return { dryRun: true, steps: [{ method: 'POST', url: updateUrl, body: updateBody }] };
+      }
+
+      const updateResp = await axios.post(updateUrl, updateBody, { headers: { Authorization: `Bearer ${token}` } });
+      return updateResp.data ?? { status: 'groupTagSet', groupTag: updateBody.groupTag };
     }
 
     const bindUrl = `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities/${identity.id}`;
@@ -517,12 +551,26 @@ export async function assignDeviceToProfile(profileId: string, serialNumber: str
 // standalone "remove" case; if your tenant's Graph version rejects it, the error is
 // thrown (callers in server.ts already treat this as a non-fatal, logged step during
 // reassignment — see the POST /api/change-enrollment-profile route).
+//
+// In 'groupTag' mode, "removing" means clearing the tag (empty string, matching
+// Autopilot's own "no tag" convention) so the device drops out of whichever dynamic
+// group it was in — there is no profile binding to unbind in this mode.
 export async function removeDeviceFromProfile(_profileId: string, serialNumber: string, platform: Platform, token: string): Promise<any> {
   if (platform === 'windows') {
     const identity = await findAutopilotIdentityBySerial(serialNumber, token);
     if (!identity) {
       throw new Error(`No Windows Autopilot device identity found for serial ${serialNumber}`);
     }
+
+    if (AUTOPILOT_ASSIGNMENT_MODE === 'groupTag') {
+      const updateResp = await axios.post(
+        `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities/${identity.id}/updateDeviceProperties`,
+        { groupTag: '' },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return updateResp.data ?? { status: 'groupTagCleared' };
+    }
+
     const response = await axios.delete(
       `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities/${identity.id}/deploymentProfile/$ref`,
       { headers: { Authorization: `Bearer ${token}` } }
