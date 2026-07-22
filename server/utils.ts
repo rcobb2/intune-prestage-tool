@@ -35,7 +35,7 @@ axios.interceptors.response.use(
   },
   (error) => {
     const ms = Date.now() - ((error.config as any)?._startTime ?? 0);
-    logger.error({ method: error.config?.method?.toUpperCase(), url: error.config?.url, status: error.response?.status, ms }, 'API error');
+    logger.error({ method: error.config?.method?.toUpperCase(), url: error.config?.url, status: error.response?.status, ms, data: error.response?.data }, 'API error');
     return Promise.reject(error);
   }
 );
