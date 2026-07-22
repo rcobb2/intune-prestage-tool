@@ -200,15 +200,33 @@ function platformFromOperatingSystem(operatingSystem?: string | null): Platform 
   return 'unknown';
 }
 
-// Looks up a device's Windows Autopilot identity by serial number, with its assigned
-// deployment profile expanded so callers get the displayName without a second round trip.
+// Looks up a device's Windows Autopilot identity by serial number, then separately
+// fetches its assigned deployment profile.
+//
+// This used to be a single call with $expand=deploymentProfile, but combining that
+// with a contains() filter causes Graph's own backend to 500 (confirmed against a
+// real tenant: "An internal server error has occurred", not a client-side error) —
+// so the deployment profile is fetched as a second request instead. The nav-property
+// GET 404s when no profile is assigned, which is expected and swallowed below.
 async function findAutopilotIdentityBySerial(serialNumber: string, token: string): Promise<any | null> {
   try {
     const results = await graphGetAllPages<any>(
-      `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities?$filter=contains(serialNumber,'${escapeODataString(serialNumber)}')&$expand=deploymentProfile`,
+      `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities?$filter=contains(serialNumber,'${escapeODataString(serialNumber)}')`,
       token
     );
-    return results[0] ?? null;
+    const identity = results[0] ?? null;
+    if (!identity) return null;
+
+    try {
+      const profileResp = await axios.get(
+        `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities/${identity.id}/deploymentProfile`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      identity.deploymentProfile = profileResp.data;
+    } catch {
+      // No deployment profile assigned — expected, leave identity.deploymentProfile unset.
+    }
+    return identity;
   } catch (err: any) {
     logger.warn({ err: err.message, serialNumber }, 'Windows Autopilot device identity lookup failed');
     return null;
@@ -290,15 +308,15 @@ function buildAutopilotOnlyDeviceRecord(identity: any): DeviceRecord {
   };
 }
 
-// importedAppleDeviceIdentity field names below are a best-effort reading of the Graph
-// beta schema (this corner of Graph is far less documented/stable than the Windows
-// Autopilot APIs above) — verify against current Microsoft Learn docs before relying on
-// this in production. The resource primarily tracks corporate device identifiers
-// (serial number or IMEI) imported via an Apple Business/School Manager token; unlike
-// managedDevice it does not carry rich attributes like model or MAC address.
+// importedDeviceIdentity (Graph beta resource, generic name despite Apple-only use here)
+// field names below — confirmed against a real tenant: contains(importedDeviceIdentifier,
+// ...) is the correct filter (not "serialNumber", which doesn't exist on this resource).
+// The resource primarily tracks corporate device identifiers (serial number or IMEI)
+// imported via an Apple Business/School Manager token; unlike managedDevice it does not
+// carry rich attributes like model or MAC address.
 function buildAppleOnlyDeviceRecord(identity: any): DeviceRecord {
   return {
-    serialNumber: identity.serialNumber ?? identity.importedDeviceIdentifier ?? '',
+    serialNumber: identity.importedDeviceIdentifier ?? '',
     intuneDeviceId: null,
     azureAdDeviceId: null,
     autopilotId: null,
@@ -310,7 +328,7 @@ function buildAppleOnlyDeviceRecord(identity: any): DeviceRecord {
     assignedUserPrincipalName: null,
     macAddress: null,
     altMacAddress: null,
-    ...buildRecordFromMetadata(identity.serialNumber ?? identity.importedDeviceIdentifier ?? ''),
+    ...buildRecordFromMetadata(identity.importedDeviceIdentifier ?? ''),
   };
 }
 
@@ -322,25 +340,36 @@ function buildAppleOnlyDeviceRecord(identity: any): DeviceRecord {
 // fall back to pre-enrollment identities (Windows Autopilot / Apple ADE), mirroring the
 // Jamf tool's own "search computers, then fall back to device-enrollments" shape.
 //
-// The managedDevices contains() filter below needs the tenant to support Graph's
-// advanced query capabilities on this endpoint. If it doesn't, the request is caught
-// and logged rather than allowed to crash the whole search — the pre-enrollment fallback
-// still runs. If this warning shows up in your logs, switch to exact-match `eq` filters
-// (serialNumber eq '{q}', deviceName eq '{q}') instead.
+// managedDevices does NOT support `or` between contains() filters on different
+// properties ("Query operator 'or' is not supported between different properties" —
+// confirmed against a real tenant), so each property is queried separately and the
+// results merged/deduped by id, rather than one combined filter.
 // ============================================================================
 export async function searchDevices(query: string, token: string): Promise<DeviceRecord[]> {
   const escaped = escapeODataString(query.trim());
 
-  let managedDevices: any[] = [];
-  try {
-    const filter = `contains(serialNumber,'${escaped}') or contains(deviceName,'${escaped}') or contains(userPrincipalName,'${escaped}') or contains(emailAddress,'${escaped}')`;
-    managedDevices = await graphGetAllPages<any>(
-      `${GRAPH_BASE}/deviceManagement/managedDevices?$filter=${encodeURIComponent(filter)}&$count=true`,
-      token,
-      { ConsistencyLevel: 'eventual' }
-    );
-  } catch (err: any) {
-    logger.warn({ err: err.message }, 'managedDevices contains() filter failed — falling back to pre-enrollment search only; your tenant may need exact-match (eq) filters instead');
+  const searchableProperties = ['serialNumber', 'deviceName', 'userPrincipalName', 'emailAddress'];
+  const perPropertyResults = await Promise.all(
+    searchableProperties.map((property) =>
+      graphGetAllPages<any>(
+        `${GRAPH_BASE}/deviceManagement/managedDevices?$filter=${encodeURIComponent(`contains(${property},'${escaped}')`)}&$count=true`,
+        token,
+        { ConsistencyLevel: 'eventual' }
+      ).catch((err: any) => {
+        logger.warn({ err: err.message, property }, `managedDevices contains(${property}) filter failed — your tenant may need exact-match (eq) filters instead`);
+        return [];
+      })
+    )
+  );
+  const seenIds = new Set<string>();
+  const managedDevices: any[] = [];
+  for (const results of perPropertyResults) {
+    for (const device of results) {
+      if (!seenIds.has(device.id)) {
+        seenIds.add(device.id);
+        managedDevices.push(device);
+      }
+    }
   }
 
   if (managedDevices.length > 0) {
@@ -349,17 +378,34 @@ export async function searchDevices(query: string, token: string): Promise<Devic
 
   const [autopilotMatches, appleMatches] = await Promise.all([
     graphGetAllPages<any>(
-      `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities?$filter=contains(serialNumber,'${escaped}')&$expand=deploymentProfile`,
+      // No $expand here — combined with contains(), it 500s on Graph's own backend
+      // (see findAutopilotIdentityBySerial). deploymentProfile is fetched per-match below.
+      `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities?$filter=contains(serialNumber,'${escaped}')`,
       token
-    ).catch((err: any) => {
+    ).then((matches) => Promise.all(matches.map(async (identity: any) => {
+      try {
+        const profileResp = await axios.get(
+          `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities/${identity.id}/deploymentProfile`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        identity.deploymentProfile = profileResp.data;
+      } catch {
+        // No deployment profile assigned — expected.
+      }
+      return identity;
+    }))).catch((err: any) => {
       logger.warn({ err: err.message }, 'windowsAutopilotDeviceIdentities search failed');
       return [];
     }),
     graphGetAllPages<any>(
-      `${GRAPH_BETA}/deviceManagement/importedAppleDeviceIdentities?$filter=contains(serialNumber,'${escaped}')`,
+      // The Apple beta resource is "importedDeviceIdentities" (generic — not
+      // Apple-specific in name), and its serial/IMEI field is importedDeviceIdentifier,
+      // not serialNumber. ("importedAppleDeviceIdentities" doesn't exist as a Graph
+      // resource segment — confirmed against a real tenant.)
+      `${GRAPH_BETA}/deviceManagement/importedDeviceIdentities?$filter=contains(importedDeviceIdentifier,'${escaped}')`,
       token
     ).catch((err: any) => {
-      logger.warn({ err: err.message }, 'importedAppleDeviceIdentities search failed (see field-name caveat on buildAppleOnlyDeviceRecord)');
+      logger.warn({ err: err.message }, 'importedDeviceIdentities search failed (see field-name caveat on buildAppleOnlyDeviceRecord)');
       return [];
     }),
   ]);
