@@ -5,6 +5,27 @@ const SKIP_AUTH = process.env.SKIP_ENTRA_AUTH === 'true';
 
 import axios from 'axios';
 
+// Delegated Microsoft Graph permissions this tool needs — requested at sign-in so
+// consent is captured up front, then used both to authenticate to our own server
+// (see server/auth.ts: the access token itself, not a separate ID token, is what the
+// server verifies) and to call Graph directly. There is no separate service
+// principal — the signed-in admin's own Entra/Intune RBAC role is what actually
+// authorizes each Graph call. Verify these exact permission strings are added as
+// DELEGATED (not Application) API permissions on the AZURE_CLIENT_ID app
+// registration and admin-consented; each admin using this tool still needs a role
+// (e.g. Intune Administrator) that grants the underlying rights, since holding the
+// scope alone isn't enough for Graph to authorize the call.
+const GRAPH_SCOPES = [
+  'DeviceManagementManagedDevices.ReadWrite.All',
+  'DeviceManagementServiceConfig.ReadWrite.All',
+  'DeviceManagementConfiguration.Read.All',
+  // Device.ReadWrite.All has no delegated version (Application-only) — this is the
+  // delegated permission actually used to delete the Entra ID device object during
+  // retire. Broader than Device-scoped, but it's what Graph offers as a delegated
+  // permission for directory object writes.
+  'Directory.ReadWrite.All',
+];
+
 // Set once the MSAL instance exists (see init()) so the request interceptor below
 // can reach it without being tied to a specific Alpine component instance.
 let msalInstance: any = null;
@@ -28,11 +49,12 @@ if (!SKIP_AUTH) {
     const accounts = msalInstance.getAllAccounts();
     if (accounts.length === 0) return config;
     try {
-      // 'User.Read' is a default, always-consented Graph scope — we don't use the
-      // access token it grants, just the fresh idToken MSAL returns alongside it.
-      const result = await msalInstance.acquireTokenSilent({ scopes: ['User.Read'], account: accounts[0] });
-      if (result?.idToken) {
-        config.headers.set('Authorization', `Bearer ${result.idToken}`);
+      // This access token is forwarded as-is: the server verifies it (auth.ts) AND
+      // uses it to call Microsoft Graph on the signed-in admin's own behalf — see the
+      // GRAPH_SCOPES comment above.
+      const result = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
+      if (result?.accessToken) {
+        config.headers.set('Authorization', `Bearer ${result.accessToken}`);
       }
     } catch (err) {
       // Leave the request unauthenticated; the server will reject it with 401
@@ -93,9 +115,9 @@ export default () => {
       if (SKIP_AUTH) return;
       this.errorMessage = '';
       try {
-        // Request the same scope acquireTokenSilent uses above, so consent is
+        // Request the same Graph scopes acquireTokenSilent uses above, so consent is
         // captured now rather than forcing an interactive prompt on the first API call.
-        const result = await this._msal.loginPopup({ scopes: ['User.Read'] });
+        const result = await this._msal.loginPopup({ scopes: GRAPH_SCOPES });
         this.isAuthenticated = true;
         resolveAuthReady?.();
         if (result?.account?.name) {

@@ -45,9 +45,8 @@ replaced wholesale on every write) does not map cleanly onto Intune:
 
 | Layer | Status |
 |---|---|
-| Entra ID user auth (`server/auth.ts`, `client/azure-auth.ts`) | Fully implemented — same pattern as the Jamf tool |
-| Microsoft Graph client-credentials token acquisition (`server/utils.ts: getGraphToken`) | Fully implemented |
-| Audit log & two-person approval workflow (`server/db.ts`, approval routes) | Fully implemented |
+| Entra ID user auth (`server/auth.ts`, `client/azure-auth.ts`) | Fully implemented — delegated Graph access token doubles as the sign-in credential; no separate service principal |
+| Audit log & two-person approval workflow (`server/db.ts`, approval routes) | Fully implemented — approving a request executes the action using the *approver's* own delegated Graph token, not the original requester's |
 | Device search (`searchDevices`) | Implemented — enrolled devices via `managedDevices`, falling back to Windows Autopilot / Apple ADE pre-enrollment identities. The `contains()` filter used for substring search needs your tenant to support Graph's advanced query capabilities on `managedDevices`; if not, it's caught and logged, and pre-enrollment fallback still runs |
 | Enrollment profile list (`getEnrollmentProfiles`) | Implemented for both platforms — Windows via `windowsAutopilotDeploymentProfiles`, Apple via `depOnboardingSettings`/`enrollmentProfiles` (lower confidence on Apple, see comment) |
 | Current profile assignment (`getEnrollmentProfileAssignment`) | Implemented for Windows; returns `'N/A'` for Apple (**stubbed** — TODO in `server/utils.ts`) |
@@ -64,11 +63,16 @@ after), and Apple ADE profile assignment (see above).
 
 ## Requirements
 - A Microsoft Entra ID tenant with Intune licensing.
-- Two Entra app registrations (see `.env.example` for exactly which Graph API
-  application permissions the second one needs):
-  1. One for user sign-in to this tool (`AZURE_CLIENT_ID`/`AZURE_AUTHORITY`).
-  2. One for the server's client-credentials calls to Microsoft Graph
-     (`GRAPH_TENANT_ID`/`GRAPH_CLIENT_ID`/`GRAPH_CLIENT_SECRET`).
+- One Entra app registration (`AZURE_CLIENT_ID`/`AZURE_AUTHORITY`) for user sign-in,
+  granted the DELEGATED Graph API permissions listed in `.env.example` with admin
+  consent. There is no second, server-held app registration or client secret — every
+  Graph call runs as the signed-in admin, using the same delegated access token that
+  authenticates them to this tool. Each admin using the tool still needs an
+  Entra/Intune role (e.g. Intune Administrator) that actually grants those rights —
+  the scope alone isn't enough for Graph to authorize the call. Note that
+  `Device.ReadWrite.All` (used for Entra ID device object cleanup during retire) has no
+  delegated version — `Directory.ReadWrite.All` is the delegated permission actually
+  used for that step.
 - Docker (or `bun` installed locally for development without containers).
 
 ## Installation

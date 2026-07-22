@@ -54,7 +54,7 @@ const server: Bun.Server = Bun.serve({
           return new Response('Invalid platform — expected "windows" or "apple"', { ...CORS_HEADERS, status: 400 });
         }
         try {
-          const profiles = await utils.getEnrollmentProfiles(platform);
+          const profiles = await utils.getEnrollmentProfiles(platform, req.graphToken);
           return new Response(JSON.stringify(profiles), { ...CORS_HEADERS, status: 200 });
         } catch (error: any) {
           logger.error({ err: error.message }, 'Error fetching enrollment profiles');
@@ -68,7 +68,7 @@ const server: Bun.Server = Bun.serve({
         const { search } = req.params;
         logger.info(`[Device Search] Incoming search for: ${search}`);
         try {
-          const results = await utils.searchDevices(search);
+          const results = await utils.searchDevices(search, req.graphToken);
           if (results.length === 0) {
             return new Response('No device found', { ...CORS_HEADERS, status: 404 });
           }
@@ -96,12 +96,12 @@ const server: Bun.Server = Bun.serve({
           // First, find the current profile assignment and remove it if it differs
           // from the target — a device can only be validly claimed by one enrollment
           // profile at a time (same constraint as Jamf prestage scope membership).
-          const current = await utils.getEnrollmentProfileAssignment(serialNumber, platform);
+          const current = await utils.getEnrollmentProfileAssignment(serialNumber, platform, req.graphToken);
           if (current.displayName !== 'Unassigned' && current.displayName !== 'N/A') {
-            const profiles = await utils.getEnrollmentProfiles(platform);
+            const profiles = await utils.getEnrollmentProfiles(platform, req.graphToken);
             const currentProfile = profiles.find(p => p.displayName === current.displayName);
             if (currentProfile && currentProfile.id !== profileId) {
-              await utils.removeDeviceFromProfile(currentProfile.id, serialNumber, platform).catch((err: any) => {
+              await utils.removeDeviceFromProfile(currentProfile.id, serialNumber, platform, req.graphToken).catch((err: any) => {
                 logger.warn({ err: err.message }, 'Warning: failed to remove from current enrollment profile');
               });
             }
@@ -110,7 +110,7 @@ const server: Bun.Server = Bun.serve({
           const url = new URL(req.url, `http://${req.headers.get('host') || 'localhost'}`);
           const dryRun = url.searchParams.get('dryRun') === 'true';
 
-          const result = await utils.assignDeviceToProfile(profileId, serialNumber, platform, dryRun);
+          const result = await utils.assignDeviceToProfile(profileId, serialNumber, platform, req.graphToken, dryRun);
           writeAudit({ action: 'enrollment_profile_change', actor: getActor(req), ip: getIP(req), device_serial: serialNumber, details: { profileId, platform, dryRun }, result: 'success' });
           return new Response(JSON.stringify(result), { ...CORS_HEADERS, status: 200 });
         } catch (error: any) {
@@ -127,7 +127,7 @@ const server: Bun.Server = Bun.serve({
         logger.info(`Removing ${platform} device with serial number: ${serialNumber} from enrollment profile: ${profileId}`);
 
         try {
-          const result = await utils.removeDeviceFromProfile(profileId, serialNumber, platform);
+          const result = await utils.removeDeviceFromProfile(profileId, serialNumber, platform, req.graphToken);
           return new Response(JSON.stringify(result), { ...CORS_HEADERS, status: 200 });
         } catch (error: any) {
           logger.error({ err: error.message }, 'Remove enrollment profile error');
@@ -172,7 +172,7 @@ const server: Bun.Server = Bun.serve({
       DELETE: withAuth(async (req) => {
         const { deviceId } = req.params;
         logger.info({ deviceId }, 'Wiping device');
-        const result = await utils.wipeDevice(deviceId);
+        const result = await utils.wipeDevice(deviceId, req.graphToken);
         writeAudit({ action: 'wipe', actor: getActor(req), ip: getIP(req), device_id: deviceId, result: result.status === 200 ? 'success' : 'error' });
         return result;
       })
@@ -184,7 +184,7 @@ const server: Bun.Server = Bun.serve({
         logger.info({ deviceId, serialNumber }, 'Retiring device');
 
         try {
-          const result = await utils.retireDevice(deviceId, serialNumber, macAddress, altMacAddress);
+          const result = await utils.retireDevice(deviceId, serialNumber, req.graphToken, macAddress, altMacAddress);
           if (!result.ok) {
             return new Response(result.message ?? 'Retirement failed', { ...CORS_HEADERS, status: 500 });
           }
@@ -256,13 +256,16 @@ const server: Bun.Server = Bun.serve({
             if (!payload.deviceId) {
               return new Response(JSON.stringify({ error: 'Approval payload missing deviceId' }), { ...CORS_HEADERS, status: 500 });
             }
-            actionResult = await utils.wipeDevice(payload.deviceId);
+            // Executed with the APPROVER's own Graph token, not the original
+            // requester's — the second admin's Entra/Intune RBAC is what actually
+            // authorizes this action, not just their click in this UI.
+            actionResult = await utils.wipeDevice(payload.deviceId, req.graphToken);
           } else if (approval.action === 'retire') {
             const { deviceId, serialNumber, macAddress, altMacAddress } = payload;
             if (!deviceId || !serialNumber) {
               return new Response(JSON.stringify({ error: 'Approval payload missing deviceId or serialNumber' }), { ...CORS_HEADERS, status: 500 });
             }
-            const result = await utils.retireDevice(deviceId, serialNumber, macAddress, altMacAddress);
+            const result = await utils.retireDevice(deviceId, serialNumber, req.graphToken, macAddress, altMacAddress);
             actionResult = new Response(
               result.ok ? JSON.stringify({ status: 'retired' }) : JSON.stringify({ error: result.message }),
               { ...CORS_HEADERS, status: result.ok ? 200 : 500 }

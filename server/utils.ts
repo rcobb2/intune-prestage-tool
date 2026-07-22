@@ -49,20 +49,25 @@ const {
   GLPI_APP_TOKEN,
   GLPI_USER_TOKEN,
 
-  GRAPH_TENANT_ID,
-  GRAPH_CLIENT_ID,
-  GRAPH_CLIENT_SECRET,
-
   CLIENT_HOSTNAME,
+  CLIENT_PORT,
 } = process.env;
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 // Autopilot deployment profile assignment/read operations are still beta-only in Graph.
 const GRAPH_BETA = 'https://graph.microsoft.com/beta';
 
+// The browser's Origin header includes the port whenever it isn't the scheme default
+// (443 for https) — CORS requires an exact match, so this must mirror the redirect-URI
+// logic in client/azure-auth.ts exactly, or every request gets silently blocked by the
+// browser once CLIENT_PORT is anything other than 443/unset.
+const clientOrigin = (!CLIENT_PORT || CLIENT_PORT === '443')
+  ? `https://${CLIENT_HOSTNAME}`
+  : `https://${CLIENT_HOSTNAME}:${CLIENT_PORT}`;
+
 export const CORS_HEADERS: ResponseInit = {
   headers: {
-    "Access-Control-Allow-Origin": `https://${CLIENT_HOSTNAME}`,
+    "Access-Control-Allow-Origin": clientOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, X-User-Name",
     "Access-Control-Allow-Credentials": "false",
@@ -108,35 +113,12 @@ export type DeviceRecord = {
 };
 
 // ============================================================================
-// Microsoft Graph auth (server-to-Graph client credentials — separate app
-// registration/permissions from the user-facing MSAL login in auth.ts/azure-auth.ts)
+// Microsoft Graph auth — there is no server-held credential here. Every function
+// below takes the caller's own delegated Graph access token (verified by
+// server/auth.ts, forwarded via req.graphToken) and uses it directly. Graph enforces
+// whatever Entra/Intune RBAC role the signed-in admin actually holds; this server
+// never has broader access than the person currently using it.
 // ============================================================================
-
-let _cachedToken: string | null = null;
-let _tokenExpiresAt = 0;
-
-export async function getGraphToken(): Promise<string> {
-  const now = Date.now();
-  if (_cachedToken && now < _tokenExpiresAt) {
-    return _cachedToken;
-  }
-
-  const tokenUrl = `https://login.microsoftonline.com/${GRAPH_TENANT_ID}/oauth2/v2.0/token`;
-  const response = await axios.post(tokenUrl, new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: GRAPH_CLIENT_ID ?? '',
-    client_secret: GRAPH_CLIENT_SECRET ?? '',
-    scope: 'https://graph.microsoft.com/.default',
-  }), {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  });
-
-  _cachedToken = response.data.access_token;
-  const expiresIn: number = response.data.expires_in ?? 3600;
-  _tokenExpiresAt = now + (expiresIn - 60) * 1000;
-  logger.info({ expiresIn, refreshAt: new Date(_tokenExpiresAt).toISOString() }, 'Graph token refreshed');
-  return _cachedToken!;
-}
 
 // ============================================================================
 // GLPI / Clearpass — vendor-agnostic, reused as-is from the Jamf tool.
@@ -346,8 +328,7 @@ function buildAppleOnlyDeviceRecord(identity: any): DeviceRecord {
 // still runs. If this warning shows up in your logs, switch to exact-match `eq` filters
 // (serialNumber eq '{q}', deviceName eq '{q}') instead.
 // ============================================================================
-export async function searchDevices(query: string): Promise<DeviceRecord[]> {
-  const token = await getGraphToken();
+export async function searchDevices(query: string, token: string): Promise<DeviceRecord[]> {
   const escaped = escapeODataString(query.trim());
 
   let managedDevices: any[] = [];
@@ -392,9 +373,7 @@ export async function searchDevices(query: string): Promise<DeviceRecord[]> {
 // ============================================================================
 // Enrollment profiles (Jamf prestage list equivalent)
 // ============================================================================
-export async function getEnrollmentProfiles(platform: Platform): Promise<EnrollmentProfile[]> {
-  const token = await getGraphToken();
-
+export async function getEnrollmentProfiles(platform: Platform, token: string): Promise<EnrollmentProfile[]> {
   if (platform === 'windows') {
     const profiles = await graphGetAllPages<any>(`${GRAPH_BETA}/deviceManagement/windowsAutopilotDeploymentProfiles`, token);
     return profiles.map((p) => ({ id: p.id, displayName: p.displayName, platform: 'windows' as const }));
@@ -421,9 +400,8 @@ export async function getEnrollmentProfiles(platform: Platform): Promise<Enrollm
 // ============================================================================
 // Current profile assignment for a device (Jamf getPrestageAssignments equivalent)
 // ============================================================================
-export async function getEnrollmentProfileAssignment(serialNumber: string, platform: Platform): Promise<{ serialNumber: string; displayName: string }> {
+export async function getEnrollmentProfileAssignment(serialNumber: string, platform: Platform, token: string): Promise<{ serialNumber: string; displayName: string }> {
   if (platform === 'windows') {
-    const token = await getGraphToken();
     const identity = await findAutopilotIdentityBySerial(serialNumber, token);
     if (!identity) return { serialNumber, displayName: 'Unassigned' };
     return { serialNumber, displayName: identity.deploymentProfile?.displayName ?? 'Unassigned' };
@@ -455,9 +433,7 @@ export async function getEnrollmentProfileAssignment(serialNumber: string, platf
 // not confirmed here — left unimplemented rather than guessed, since this mutates real
 // enrollment configuration.
 // ============================================================================
-export async function assignDeviceToProfile(profileId: string, serialNumber: string, platform: Platform, dryRun?: boolean): Promise<any> {
-  const token = await getGraphToken();
-
+export async function assignDeviceToProfile(profileId: string, serialNumber: string, platform: Platform, token: string, dryRun?: boolean): Promise<any> {
   if (platform === 'windows') {
     const identity = await findAutopilotIdentityBySerial(serialNumber, token);
     if (!identity) {
@@ -495,9 +471,7 @@ export async function assignDeviceToProfile(profileId: string, serialNumber: str
 // standalone "remove" case; if your tenant's Graph version rejects it, the error is
 // thrown (callers in server.ts already treat this as a non-fatal, logged step during
 // reassignment — see the POST /api/change-enrollment-profile route).
-export async function removeDeviceFromProfile(_profileId: string, serialNumber: string, platform: Platform): Promise<any> {
-  const token = await getGraphToken();
-
+export async function removeDeviceFromProfile(_profileId: string, serialNumber: string, platform: Platform, token: string): Promise<any> {
   if (platform === 'windows') {
     const identity = await findAutopilotIdentityBySerial(serialNumber, token);
     if (!identity) {
@@ -527,9 +501,8 @@ export async function removeDeviceFromProfile(_profileId: string, serialNumber: 
 // that automatically since it changes the UX flow (the code must be shown BEFORE the
 // wipe is confirmed, not after).
 // ============================================================================
-export async function wipeDevice(intuneDeviceId: string, options?: { keepEnrollmentData?: boolean; keepUserData?: boolean }): Promise<Response> {
+export async function wipeDevice(intuneDeviceId: string, token: string, options?: { keepEnrollmentData?: boolean; keepUserData?: boolean }): Promise<Response> {
   try {
-    const token = await getGraphToken();
     const body = {
       keepEnrollmentData: options?.keepEnrollmentData ?? true,
       keepUserData: options?.keepUserData ?? false,
@@ -557,11 +530,10 @@ export async function wipeDevice(intuneDeviceId: string, options?: { keepEnrollm
 export async function retireDevice(
   intuneDeviceId: string,
   serialNumber: string,
+  token: string,
   macAddress?: string,
   altMacAddress?: string,
 ): Promise<{ ok: boolean; message?: string }> {
-  const token = await getGraphToken();
-
   // Capture the Entra ID device GUID before retiring — the managedDevice object may
   // disappear once retired, and this is needed to clean up the Entra ID device object
   // afterward.
