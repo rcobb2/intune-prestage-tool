@@ -211,11 +211,16 @@ function platformFromOperatingSystem(operatingSystem?: string | null): Platform 
 // Looks up a device's Windows Autopilot identity by serial number, then separately
 // fetches its assigned deployment profile.
 //
-// This used to be a single call with $expand=deploymentProfile, but combining that
-// with a contains() filter causes Graph's own backend to 500 (confirmed against a
-// real tenant: "An internal server error has occurred", not a client-side error) —
-// so the deployment profile is fetched as a second request instead. The nav-property
-// GET 404s when no profile is assigned, which is expected and swallowed below.
+// This used to be a single call with $expand=deploymentProfile on the filtered LIST
+// query, but combining that with a contains() filter causes Graph's own backend to 500
+// (confirmed against a real tenant: "An internal server error has occurred"). GETting
+// the deploymentProfile nav property directly as its own resource
+// (windowsAutopilotDeviceIdentities/{id}/deploymentProfile) ALSO doesn't work — Graph
+// rejects it with 400 "No OData route exists that match template
+// ~/singleton/navigation/key/navigation" (also confirmed against a real tenant). What
+// does work: re-GETting the single entity by id with $expand=deploymentProfile — a
+// different request shape from both of the above. 404/no data if no profile is
+// assigned, which is expected and swallowed below.
 async function findAutopilotIdentityBySerial(serialNumber: string, token: string): Promise<any | null> {
   try {
     const results = await graphGetAllPages<any>(
@@ -227,10 +232,10 @@ async function findAutopilotIdentityBySerial(serialNumber: string, token: string
 
     try {
       const profileResp = await axios.get(
-        `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities/${identity.id}/deploymentProfile`,
+        `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities/${identity.id}?$expand=deploymentProfile`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      identity.deploymentProfile = profileResp.data;
+      identity.deploymentProfile = profileResp.data.deploymentProfile;
     } catch {
       // No deployment profile assigned — expected, leave identity.deploymentProfile unset.
     }
@@ -360,7 +365,9 @@ function buildAppleOnlyDeviceRecord(identity: any): DeviceRecord {
 export async function searchDevices(query: string, token: string): Promise<DeviceRecord[]> {
   const escaped = escapeODataString(query.trim());
 
-  const searchableProperties = ['serialNumber', 'deviceName', 'userPrincipalName', 'emailAddress', 'userDisplayName'];
+  // userDisplayName is NOT filterable here — Graph rejects it with 400 "Unsupported
+  // parameter found in query" (confirmed against a real tenant), unlike the other four.
+  const searchableProperties = ['serialNumber', 'deviceName', 'userPrincipalName', 'emailAddress'];
   const perPropertyResults = await Promise.all(
     searchableProperties.map((property) =>
       graphGetAllPages<any>(
@@ -395,11 +402,13 @@ export async function searchDevices(query: string, token: string): Promise<Devic
       token
     ).then((matches) => Promise.all(matches.map(async (identity: any) => {
       try {
+        // See findAutopilotIdentityBySerial for why this is a re-GET with $expand
+        // rather than $expand on the list query above, or a direct nav-property GET.
         const profileResp = await axios.get(
-          `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities/${identity.id}/deploymentProfile`,
+          `${GRAPH_BETA}/deviceManagement/windowsAutopilotDeviceIdentities/${identity.id}?$expand=deploymentProfile`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
-        identity.deploymentProfile = profileResp.data;
+        identity.deploymentProfile = profileResp.data.deploymentProfile;
       } catch {
         // No deployment profile assigned — expected.
       }
