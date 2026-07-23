@@ -136,28 +136,24 @@ const server: Bun.Server = Bun.serve({
       })
     },
 
-    // Jamf's "Inventory Preload" equivalent — local-only metadata (username, building,
-    // room, asset tag) since Graph has no native pre-enrollment record for these
-    // fields. `username` covers both username and email (merged, single free-text
-    // field). See db.ts device_metadata table.
+    // Jamf's "Inventory Preload" equivalent — local-only metadata (username, covering
+    // both username and email as one free-text field) since Graph has no native
+    // pre-enrollment record for this. See db.ts device_metadata table.
     "/api/device-metadata/:serialNumber": {
       GET: withAuth(async (req) => {
         const serialNumber = decodeURIComponent(req.params.serialNumber);
         const metadata = getDeviceMetadata(serialNumber);
-        return new Response(JSON.stringify(metadata ?? { serialNumber, username: null, building: null, room: null, assetTag: null }), { ...CORS_HEADERS, status: 200 });
+        return new Response(JSON.stringify(metadata ?? { serialNumber, username: null }), { ...CORS_HEADERS, status: 200 });
       }),
       PUT: withAuth(async (req) => {
         const serialNumber = decodeURIComponent(req.params.serialNumber);
-        const body = await req.json() as { username?: string; building?: string; room?: string; assetTag?: string };
+        const body = await req.json() as { username?: string };
 
         logger.info({ serialNumber }, 'Updating device metadata');
         try {
           upsertDeviceMetadata({
             serialNumber,
             username: body.username ?? null,
-            building: body.building ?? null,
-            room: body.room ?? null,
-            assetTag: body.assetTag ?? null,
           });
           writeAudit({ action: 'update_metadata', actor: getActor(req), ip: getIP(req), device_serial: serialNumber, details: body, result: 'success' });
           return new Response(JSON.stringify({ ok: true }), { ...CORS_HEADERS, status: 200 });
@@ -233,11 +229,11 @@ const server: Bun.Server = Bun.serve({
     "/api/approvals": {
       POST: withAuth(async (req) => {
         try {
-          const body = await req.json() as { action: string; justification?: string; deviceSerial: string; deviceId?: string; deviceAssetTag?: string; payload: object };
-          const { action, justification, deviceSerial, deviceId, deviceAssetTag, payload } = body;
+          const body = await req.json() as { action: string; justification?: string; deviceSerial: string; deviceId?: string; payload: object };
+          const { action, justification, deviceSerial, deviceId, payload } = body;
           const requester = getActor(req);
 
-          const id = createApproval({ action, requester, justification, device_serial: deviceSerial, device_id: deviceId, device_asset_tag: deviceAssetTag, payload });
+          const id = createApproval({ action, requester, justification, device_serial: deviceSerial, device_id: deviceId, payload });
           logger.info({ action, requester, deviceSerial, justification }, 'Approval request created');
           return new Response(JSON.stringify({ id }), { ...CORS_HEADERS, status: 201 });
         } catch (error: any) {

@@ -30,13 +30,12 @@ replaced wholesale on every write) does not map cleanly onto Intune:
 - **Apple devices enrolled via Intune (Apple ADE)** use yet another profile-assignment
   model, scoped per Apple Business/School Manager token (`depOnboardingSettings`) rather
   than one flat list.
-- **Jamf's "Inventory Preload"** (username/email, building, room, asset tag pre-filled
-  before a device ever checks in) has no Graph equivalent — Intune has no generic
-  arbitrary-metadata record for a not-yet-enrolled device. This tool tracks the same kind
-  of fields locally in a `device_metadata` SQLite table (`server/db.ts`, `username`
-  covering both username and email as a single free-text field) and joins them onto
-  live Graph data at search time, the same way the Jamf tool joins Jamf's own Preload
-  records onto inventory data.
+- **Jamf's "Inventory Preload"** (username/email pre-filled before a device ever checks
+  in) has no Graph equivalent — Intune has no generic arbitrary-metadata record for a
+  not-yet-enrolled device. This tool tracks a single `username` field (covering both
+  username and email) locally in a `device_metadata` SQLite table (`server/db.ts`) and
+  joins it onto live Graph data at search time, the same way the Jamf tool joins Jamf's
+  own Preload records onto inventory data.
 - **Device wipe has no PIN-based Activation Lock bypass equivalent.** Jamf's erase
   endpoint takes a caller-supplied PIN (`DEVICE_ERASE_PIN`); Graph instead exposes a
   device's `activationLockBypassCode` to *read*, which your workflow needs to surface to

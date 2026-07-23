@@ -31,9 +31,6 @@ type DeviceInfo = {
   macAddress: string | null,
   altMacAddress: string | null,
   username: string | null,
-  building: string | null,
-  room: string | null,
-  assetTag: string | null,
 };
 
 function createAlpineData() {
@@ -114,7 +111,6 @@ function createAlpineData() {
           justification: modal.justification.trim(),
           deviceSerial: device.serialNumber,
           deviceId: device.intuneDeviceId ?? undefined,
-          deviceAssetTag: device.assetTag ?? undefined,
           payload: { deviceId: device.intuneDeviceId, serialNumber: device.serialNumber, macAddress: device.macAddress, altMacAddress: device.altMacAddress },
         });
         (document.getElementById('approvalRequestDialog') as HTMLDialogElement).close();
@@ -210,7 +206,7 @@ function createAlpineData() {
       const current = this.dataList[this.dataIndex];
       if (!current) { this.errorMessage = 'No data to update.'; this.successMessage = ''; return; }
 
-      const EDITABLE = ['username', 'building', 'room', 'assetTag'] as const;
+      const EDITABLE = ['username'] as const;
       const fieldLines: string[] = EDITABLE
         .filter(k => String((current as any)[k] ?? '') !== String((original as any)[k] ?? ''))
         .map(k => `${k}: "${(original as any)[k] ?? ''}" → "${(current as any)[k] ?? ''}"`);
@@ -246,9 +242,6 @@ function createAlpineData() {
             });
             await axios.put(`/device-metadata/${encodeURIComponent(current.serialNumber)}`, {
               username: current.username,
-              building: current.building,
-              room: current.room,
-              assetTag: current.assetTag,
             });
           }
           this.dataList[this.dataIndex] = { ...current };

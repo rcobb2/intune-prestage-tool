@@ -97,9 +97,9 @@ export type EnrollmentProfile = {
 };
 
 // Vendor-neutral device record returned to the client — the Graph/Intune equivalent of
-// the Jamf tool's JAMFResponse type. `building`/`room`/`username`/`assetTag` come from
-// the local device_metadata table (see db.ts) since Graph has no native equivalent of
-// Jamf's Inventory Preload; everything else comes live from Graph. `username` covers
+// the Jamf tool's JAMFResponse type. `username` comes from the local device_metadata
+// table (see db.ts) since Graph has no native equivalent of Jamf's Inventory Preload
+// pre-enrollment metadata; everything else comes live from Graph. `username` covers
 // both username and email (merged — a single free-text "who does this belong to"
 // field), falling back to Graph's own userPrincipalName/emailAddress when unset.
 export type DeviceRecord = {
@@ -116,9 +116,6 @@ export type DeviceRecord = {
   macAddress: string | null;
   altMacAddress: string | null;
   username: string | null;
-  building: string | null;
-  room: string | null;
-  assetTag: string | null;
 };
 
 // ============================================================================
@@ -251,9 +248,6 @@ function buildRecordFromMetadata(serialNumber: string) {
   const metadata = getDeviceMetadata(serialNumber);
   return {
     username: metadata?.username ?? null,
-    building: metadata?.building ?? null,
-    room: metadata?.room ?? null,
-    assetTag: metadata?.assetTag ?? null,
   };
 }
 
@@ -296,9 +290,6 @@ async function buildEnrolledDeviceRecord(managedDevice: any, token: string): Pro
     // detail did (wifi + bluetooth) — left null.
     altMacAddress: null,
     username: metadata.username ?? managedDevice.userPrincipalName ?? managedDevice.emailAddress ?? null,
-    building: metadata.building,
-    room: metadata.room,
-    assetTag: metadata.assetTag,
   };
 }
 

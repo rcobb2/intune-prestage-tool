@@ -115,9 +115,6 @@
                   macAddress: 'Primary MAC Address',
                   altMacAddress: 'Secondary MAC Address',
                   username: 'User / Email',
-                  building: 'Building',
-                  room: 'Room',
-                  assetTag: 'Asset Tag',
                 }[name] || name"></label>
                 <!-- Device Name is only writable for already-enrolled devices — renaming
                      needs a real intuneDeviceId to target via Graph's setDeviceName action. -->
@@ -215,7 +212,6 @@
       <template x-if="approvalModal.device">
         <div class="bg-base-200 rounded-box p-3 mb-4 text-sm space-y-1">
           <p><span class="font-semibold">Serial:</span> <span class="font-mono" x-text="approvalModal.device.serialNumber"></span></p>
-          <p><span class="font-semibold">Asset Tag:</span> <span x-text="approvalModal.device.assetTag"></span></p>
           <p><span class="font-semibold">Name:</span> <span x-text="approvalModal.device.name"></span></p>
         </div>
       </template>
@@ -245,7 +241,6 @@
             <div class="flex items-center gap-2">
               <span class="badge badge-warning" x-text="item.action.toUpperCase()"></span>
               <span class="font-mono text-sm font-semibold" x-text="item.device_serial"></span>
-              <span class="text-xs text-base-content/60" x-text="`Asset: ${item.device_asset_tag ?? 'N/A'}`"></span>
             </div>
             <span class="text-xs text-base-content/60" x-text="item.created_at"></span>
           </div>
