@@ -112,10 +112,11 @@ Three tables, all queried/written directly with `bun:sqlite` (no ORM):
   creates a request (`POST /api/approvals`), a *different* admin must approve it (`server.ts`
   rejects self-approval by comparing actor emails case-insensitively) before the underlying
   Graph mutation actually runs.
-- `device_metadata` — the Jamf "Inventory Preload" equivalent (username/email/building/room/
-  assetTag). Graph has no pre-enrollment metadata record, so this is tracked locally and
-  joined onto live Graph device records at search time (see `buildRecordFromMetadata` in
-  `utils.ts`).
+- `device_metadata` — the Jamf "Inventory Preload" equivalent (`username`/`building`/`room`/
+  `assetTag`; `username` covers both username and email as a single free-text field — there's
+  a startup migration in `db.ts` that drops a pre-existing separate `email` column if found).
+  Graph has no pre-enrollment metadata record, so this is tracked locally and joined onto
+  live Graph device records at search time (see `buildRecordFromMetadata` in `utils.ts`).
 
 ### Route → utils.ts mapping
 

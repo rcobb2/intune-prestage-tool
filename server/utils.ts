@@ -97,9 +97,11 @@ export type EnrollmentProfile = {
 };
 
 // Vendor-neutral device record returned to the client — the Graph/Intune equivalent of
-// the Jamf tool's JAMFResponse type. `building`/`room`/`username`/`email`/`assetTag` come
-// from the local device_metadata table (see db.ts) since Graph has no native equivalent
-// of Jamf's Inventory Preload; everything else comes live from Graph.
+// the Jamf tool's JAMFResponse type. `building`/`room`/`username`/`assetTag` come from
+// the local device_metadata table (see db.ts) since Graph has no native equivalent of
+// Jamf's Inventory Preload; everything else comes live from Graph. `username` covers
+// both username and email (merged — a single free-text "who does this belong to"
+// field), falling back to Graph's own userPrincipalName/emailAddress when unset.
 export type DeviceRecord = {
   serialNumber: string;
   intuneDeviceId: string | null;
@@ -114,7 +116,6 @@ export type DeviceRecord = {
   macAddress: string | null;
   altMacAddress: string | null;
   username: string | null;
-  email: string | null;
   building: string | null;
   room: string | null;
   assetTag: string | null;
@@ -250,7 +251,6 @@ function buildRecordFromMetadata(serialNumber: string) {
   const metadata = getDeviceMetadata(serialNumber);
   return {
     username: metadata?.username ?? null,
-    email: metadata?.email ?? null,
     building: metadata?.building ?? null,
     room: metadata?.room ?? null,
     assetTag: metadata?.assetTag ?? null,
@@ -295,8 +295,7 @@ async function buildEnrolledDeviceRecord(managedDevice: any, token: string): Pro
     // managedDevice does not expose a second MAC address the way Jamf's mobile device
     // detail did (wifi + bluetooth) — left null.
     altMacAddress: null,
-    username: metadata.username ?? managedDevice.userPrincipalName ?? null,
-    email: metadata.email ?? managedDevice.emailAddress ?? null,
+    username: metadata.username ?? managedDevice.userPrincipalName ?? managedDevice.emailAddress ?? null,
     building: metadata.building,
     room: metadata.room,
     assetTag: metadata.assetTag,
@@ -591,6 +590,26 @@ export async function removeDeviceFromProfile(_profileId: string, serialNumber: 
   }
 
   throw new Error('removeDeviceFromProfile for platform "apple" is not implemented — see assignDeviceToProfile comment block.');
+}
+
+// ============================================================================
+// Rename a Windows device via Intune's setDeviceName remote action (Accounts CSP).
+// Beta-only, and needs DeviceManagementManagedDevices.PrivilegedOperations.All — a
+// separate, more privileged delegated permission from the ReadWrite.All scope used
+// everywhere else in this file (confirmed against Microsoft's own API reference; the
+// v1.0 managedDevice update endpoint documents `deviceName` as read-only even on
+// PATCH, so this dedicated action is the only real way to do this). Only applies to
+// already-enrolled devices (managedDeviceId) — there is no equivalent for Autopilot-
+// only pre-enrollment identities, since there's no live device to push the command to.
+// The rename is not instant — it applies next time the device checks in.
+// ============================================================================
+export async function renameDevice(intuneDeviceId: string, newName: string, token: string): Promise<any> {
+  const response = await axios.post(
+    `${GRAPH_BETA}/deviceManagement/managedDevices/${intuneDeviceId}/setDeviceName`,
+    { deviceName: newName },
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  return response.data ?? { status: 'renamePending' };
 }
 
 // ============================================================================

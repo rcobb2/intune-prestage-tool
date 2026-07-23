@@ -114,13 +114,14 @@
                   assignedUserPrincipalName: 'Assigned User (Autopilot)',
                   macAddress: 'Primary MAC Address',
                   altMacAddress: 'Secondary MAC Address',
-                  username: 'Username',
-                  email: 'Email',
+                  username: 'User / Email',
                   building: 'Building',
                   room: 'Room',
                   assetTag: 'Asset Tag',
                 }[name] || name"></label>
-                <input type="text" class="input datafield-input" @keydown.enter="send" @input="currentData[name] = $event.target.value" :id="$id('data-field')" :value="value" :disabled="['serialNumber', 'name', 'model', 'assignedUserPrincipalName', 'macAddress', 'altMacAddress'].includes(name)" />
+                <!-- Device Name is only writable for already-enrolled devices — renaming
+                     needs a real intuneDeviceId to target via Graph's setDeviceName action. -->
+                <input type="text" class="input datafield-input" @keydown.enter="send" @input="currentData[name] = $event.target.value" :id="$id('data-field')" :value="value" :disabled="['serialNumber', 'model', 'assignedUserPrincipalName', 'macAddress', 'altMacAddress'].includes(name) || (name === 'name' && !currentData.intuneDeviceId)" />
               </span>
             </template>
 

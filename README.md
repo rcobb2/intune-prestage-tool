@@ -30,10 +30,11 @@ replaced wholesale on every write) does not map cleanly onto Intune:
 - **Apple devices enrolled via Intune (Apple ADE)** use yet another profile-assignment
   model, scoped per Apple Business/School Manager token (`depOnboardingSettings`) rather
   than one flat list.
-- **Jamf's "Inventory Preload"** (username, email, building, room, asset tag pre-filled
+- **Jamf's "Inventory Preload"** (username/email, building, room, asset tag pre-filled
   before a device ever checks in) has no Graph equivalent — Intune has no generic
-  arbitrary-metadata record for a not-yet-enrolled device. This tool tracks those same
-  fields locally in a `device_metadata` SQLite table (`server/db.ts`) and joins them onto
+  arbitrary-metadata record for a not-yet-enrolled device. This tool tracks the same kind
+  of fields locally in a `device_metadata` SQLite table (`server/db.ts`, `username`
+  covering both username and email as a single free-text field) and joins them onto
   live Graph data at search time, the same way the Jamf tool joins Jamf's own Preload
   records onto inventory data.
 - **Device wipe has no PIN-based Activation Lock bypass equivalent.** Jamf's erase
@@ -51,6 +52,7 @@ replaced wholesale on every write) does not map cleanly onto Intune:
 | Enrollment profile list (`getEnrollmentProfiles`) | Implemented for both platforms — Windows via `windowsAutopilotDeploymentProfiles`, Apple via `depOnboardingSettings`/`enrollmentProfiles` (lower confidence on Apple, see comment) |
 | Current profile assignment (`getEnrollmentProfileAssignment`) | Implemented for Windows; returns `'N/A'` for Apple (**stubbed** — TODO in `server/utils.ts`) |
 | Assign / remove profile (`assignDeviceToProfile`, `removeDeviceFromProfile`) | Implemented for Windows, two modes via `AUTOPILOT_ASSIGNMENT_MODE` — `direct` (bind + `assign` action) or `groupTag` (sets Autopilot Group Tag, relies on a pre-existing dynamic Entra ID group to actually assign the profile; see Requirements below). **Stubbed** (throws) for Apple — the exact per-device Graph action isn't confirmed, and a mutating write shouldn't be guessed at |
+| Rename device (`renameDevice`) | Implemented — Windows-only, enrolled devices only, via the beta `setDeviceName` remote action (`deviceName` is read-only even via `PATCH`). Needs the separate, more privileged `DeviceManagementManagedDevices.PrivilegedOperations.All` delegated scope. Not instant — applies next check-in |
 | Wipe (`wipeDevice`) | Implemented — `managedDevices/{id}/wipe` with `keepEnrollmentData` defaulted `true` so Autopilot devices reprovision |
 | Retire (`retireDevice`) | Implemented — Intune retire, then best-effort cleanup of the Windows Autopilot identity and the Entra ID device object |
 | GLPI / ClearPass retirement cleanup steps | Fully implemented — reused as-is, these are vendor-agnostic |

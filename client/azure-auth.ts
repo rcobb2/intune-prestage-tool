@@ -29,6 +29,9 @@ const GRAPH_SCOPES = [
   // retire. Broader than Device-scoped, but it's what Graph offers as a delegated
   // permission for directory object writes.
   'Directory.ReadWrite.All',
+  // A separate, more privileged scope from ReadWrite.All above — required
+  // specifically for the setDeviceName remote action (renameDevice in server/utils.ts).
+  'DeviceManagementManagedDevices.PrivilegedOperations.All',
 ];
 
 // Set once the MSAL instance exists (see init()) so the request interceptor below

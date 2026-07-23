@@ -136,25 +136,25 @@ const server: Bun.Server = Bun.serve({
       })
     },
 
-    // Jamf's "Inventory Preload" equivalent — local-only metadata (username, email,
-    // building, room, asset tag) since Graph has no native pre-enrollment record for
-    // these fields. See db.ts device_metadata table.
+    // Jamf's "Inventory Preload" equivalent — local-only metadata (username, building,
+    // room, asset tag) since Graph has no native pre-enrollment record for these
+    // fields. `username` covers both username and email (merged, single free-text
+    // field). See db.ts device_metadata table.
     "/api/device-metadata/:serialNumber": {
       GET: withAuth(async (req) => {
         const serialNumber = decodeURIComponent(req.params.serialNumber);
         const metadata = getDeviceMetadata(serialNumber);
-        return new Response(JSON.stringify(metadata ?? { serialNumber, username: null, email: null, building: null, room: null, assetTag: null }), { ...CORS_HEADERS, status: 200 });
+        return new Response(JSON.stringify(metadata ?? { serialNumber, username: null, building: null, room: null, assetTag: null }), { ...CORS_HEADERS, status: 200 });
       }),
       PUT: withAuth(async (req) => {
         const serialNumber = decodeURIComponent(req.params.serialNumber);
-        const body = await req.json() as { username?: string; email?: string; building?: string; room?: string; assetTag?: string };
+        const body = await req.json() as { username?: string; building?: string; room?: string; assetTag?: string };
 
         logger.info({ serialNumber }, 'Updating device metadata');
         try {
           upsertDeviceMetadata({
             serialNumber,
             username: body.username ?? null,
-            email: body.email ?? null,
             building: body.building ?? null,
             room: body.room ?? null,
             assetTag: body.assetTag ?? null,
@@ -164,6 +164,30 @@ const server: Bun.Server = Bun.serve({
         } catch (error: any) {
           writeAudit({ action: 'update_metadata', actor: getActor(req), ip: getIP(req), device_serial: serialNumber, result: 'error', error_detail: String(error.message) });
           return new Response(`Error updating device metadata: ${error.message}`, { ...CORS_HEADERS, status: 500 });
+        }
+      })
+    },
+
+    // Renames an already-enrolled Windows device via Graph's setDeviceName action —
+    // see the comment above utils.ts: renameDevice for why this can't just be a PATCH.
+    // Not instant: applies next time the device checks in.
+    "/api/rename-device/:deviceId": {
+      PUT: withAuth(async (req) => {
+        const { deviceId } = req.params;
+        const body = await req.json() as { name?: string };
+        const newName = (body.name ?? '').trim();
+        if (!newName) {
+          return new Response('Missing new device name', { ...CORS_HEADERS, status: 400 });
+        }
+
+        logger.info({ deviceId, newName }, 'Renaming device');
+        try {
+          const result = await utils.renameDevice(deviceId, newName, req.graphToken);
+          writeAudit({ action: 'rename_device', actor: getActor(req), ip: getIP(req), device_id: deviceId, details: { newName }, result: 'success' });
+          return new Response(JSON.stringify(result), { ...CORS_HEADERS, status: 200 });
+        } catch (error: any) {
+          writeAudit({ action: 'rename_device', actor: getActor(req), ip: getIP(req), device_id: deviceId, details: { newName }, result: 'error', error_detail: String(error.message) });
+          return new Response(`Error renaming device: ${error.message}`, { ...CORS_HEADERS, status: 500 });
         }
       })
     },

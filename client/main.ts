@@ -31,7 +31,6 @@ type DeviceInfo = {
   macAddress: string | null,
   altMacAddress: string | null,
   username: string | null,
-  email: string | null,
   building: string | null,
   room: string | null,
   assetTag: string | null,
@@ -211,7 +210,7 @@ function createAlpineData() {
       const current = this.dataList[this.dataIndex];
       if (!current) { this.errorMessage = 'No data to update.'; this.successMessage = ''; return; }
 
-      const EDITABLE = ['username', 'email', 'building', 'room', 'assetTag'] as const;
+      const EDITABLE = ['username', 'building', 'room', 'assetTag'] as const;
       const fieldLines: string[] = EDITABLE
         .filter(k => String((current as any)[k] ?? '') !== String((original as any)[k] ?? ''))
         .map(k => `${k}: "${(original as any)[k] ?? ''}" → "${(current as any)[k] ?? ''}"`);
@@ -222,7 +221,15 @@ function createAlpineData() {
         ? [`Enrollment profile: "${original.currentEnrollmentProfile}" → "${current.currentEnrollmentProfile}"`]
         : [];
 
-      const lines = [...fieldLines, ...profileLines];
+      // Renaming only applies to already-enrolled devices (needs a real intuneDeviceId
+      // to target with Graph's setDeviceName action) and isn't instant — it applies
+      // next time the device checks in.
+      const hasNameUpdate = !!current.intuneDeviceId && String(current.name ?? '') !== String(original.name ?? '');
+      const nameLines: string[] = hasNameUpdate
+        ? [`Device name: "${original.name ?? ''}" → "${current.name ?? ''}" (applies next check-in)`]
+        : [];
+
+      const lines = [...fieldLines, ...profileLines, ...nameLines];
       if (lines.length === 0) { this.errorMessage = 'No changes to update.'; this.successMessage = ''; return; }
 
       this.showConfirm('Confirm Changes', lines, async () => {
@@ -230,13 +237,15 @@ function createAlpineData() {
           if (hasProfileUpdate) {
             await axios.post(`/change-enrollment-profile/${this.searchType}/${this.updateToProfile}/${current.serialNumber}`);
           }
+          if (hasNameUpdate) {
+            await axios.put(`/rename-device/${current.intuneDeviceId}`, { name: current.name });
+          }
           if (fieldLines.length > 0) {
             Object.keys(current).forEach(key => {
               if ((current as any)[key] === null) (current as any)[key] = '';
             });
             await axios.put(`/device-metadata/${encodeURIComponent(current.serialNumber)}`, {
               username: current.username,
-              email: current.email,
               building: current.building,
               room: current.room,
               assetTag: current.assetTag,

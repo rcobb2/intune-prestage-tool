@@ -34,15 +34,23 @@ db.run(`CREATE TABLE IF NOT EXISTS pending_approvals (
 // Graph/Intune has no equivalent of Jamf's "Inventory Preload" — there is no generic
 // building/room/asset-tag record attachable to a device before it enrolls. This table
 // is that equivalent, kept locally and joined onto live Graph data at search time.
+// `username` covers both username and email (merged into one free-text field).
 db.run(`CREATE TABLE IF NOT EXISTS device_metadata (
   serial_number TEXT PRIMARY KEY,
   username TEXT,
-  email TEXT,
   building TEXT,
   room TEXT,
   asset_tag TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`);
+
+// Migration: earlier versions of this table had a separate `email` column, merged
+// into `username` above. Drop it if a pre-existing table still has it — safe/no-op
+// once already migrated, since it only acts when the column is actually present.
+const deviceMetadataColumns = db.query(`PRAGMA table_info(device_metadata)`).all() as any[];
+if (deviceMetadataColumns.some((c) => c.name === 'email')) {
+  db.run(`ALTER TABLE device_metadata DROP COLUMN email`);
+}
 
 export function writeAudit(entry: {
   action: string;
@@ -116,7 +124,6 @@ export function resolveApproval(id: number, approver: string, status: 'approved'
 export type DeviceMetadata = {
   serialNumber: string;
   username: string | null;
-  email: string | null;
   building: string | null;
   room: string | null;
   assetTag: string | null;
@@ -128,7 +135,6 @@ export function getDeviceMetadata(serialNumber: string): DeviceMetadata | null {
   return {
     serialNumber: row.serial_number,
     username: row.username,
-    email: row.email,
     building: row.building,
     room: row.room,
     assetTag: row.asset_tag,
@@ -137,16 +143,15 @@ export function getDeviceMetadata(serialNumber: string): DeviceMetadata | null {
 
 export function upsertDeviceMetadata(entry: DeviceMetadata) {
   db.run(
-    `INSERT INTO device_metadata (serial_number, username, email, building, room, asset_tag, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    `INSERT INTO device_metadata (serial_number, username, building, room, asset_tag, updated_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(serial_number) DO UPDATE SET
        username = excluded.username,
-       email = excluded.email,
        building = excluded.building,
        room = excluded.room,
        asset_tag = excluded.asset_tag,
        updated_at = excluded.updated_at`,
-    [entry.serialNumber, entry.username, entry.email, entry.building, entry.room, entry.assetTag]
+    [entry.serialNumber, entry.username, entry.building, entry.room, entry.assetTag]
   );
 }
 
