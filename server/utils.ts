@@ -348,23 +348,26 @@ function buildAppleOnlyDeviceRecord(identity: any): DeviceRecord {
 // fall back to pre-enrollment identities (Windows Autopilot / Apple ADE), mirroring the
 // Jamf tool's own "search computers, then fall back to device-enrollments" shape.
 //
-// managedDevices does NOT support `or` between contains() filters on different
-// properties ("Query operator 'or' is not supported between different properties" —
-// confirmed against a real tenant), so each property is queried separately and the
-// results merged/deduped by id, rather than one combined filter.
+// managedDevices' contains()/advanced-query support turned out to be unreliable on this
+// tenant — confirmed empirically: contains(deviceName,...) returned zero matches for a
+// device known to have that exact deviceName, while deviceName eq '...' found it
+// immediately. Exact-match (`eq`) filters are used here instead; this trades substring
+// search for actually finding real enrolled devices. Also does NOT support `or` between
+// filters on different properties ("Query operator 'or' is not supported between
+// different properties" — confirmed against a real tenant), so each property is queried
+// separately and the results merged/deduped by id.
 // ============================================================================
 export async function searchDevices(query: string, token: string): Promise<DeviceRecord[]> {
   const escaped = escapeODataString(query.trim());
 
-  const searchableProperties = ['serialNumber', 'deviceName', 'userPrincipalName', 'emailAddress'];
+  const searchableProperties = ['serialNumber', 'deviceName', 'userPrincipalName', 'emailAddress', 'userDisplayName'];
   const perPropertyResults = await Promise.all(
     searchableProperties.map((property) =>
       graphGetAllPages<any>(
-        `${GRAPH_BASE}/deviceManagement/managedDevices?$filter=${encodeURIComponent(`contains(${property},'${escaped}')`)}&$count=true`,
-        token,
-        { ConsistencyLevel: 'eventual' }
+        `${GRAPH_BASE}/deviceManagement/managedDevices?$filter=${encodeURIComponent(`${property} eq '${escaped}'`)}`,
+        token
       ).catch((err: any) => {
-        logger.warn({ err: err.message, property }, `managedDevices contains(${property}) filter failed — your tenant may need exact-match (eq) filters instead`);
+        logger.warn({ err: err.message, property }, `managedDevices eq(${property}) filter failed`);
         return [];
       })
     )
