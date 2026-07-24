@@ -2,10 +2,23 @@ import axios from 'axios';
 import logger from './logger.ts';
 import axiosRetry from 'axios-retry';
 import { getDeviceMetadata } from './db.ts';
+import { externalApiRequestDuration, externalApiErrorsTotal } from './metrics.ts';
 
 // Without this, a hung connection to Graph (or GLPI/Clearpass) would hang the request
 // handler indefinitely — axios has no default timeout.
 axios.defaults.timeout = 15000;
+
+// Identifies which external system a request went to, for metric labeling. Graph's
+// base URLs (GRAPH_BASE/GRAPH_BETA below) are hardcoded constants rather than env vars,
+// so they're matched directly here instead of via process.env like GLPI/Clearpass are.
+function apiTarget(url?: string): string {
+  if (!url) return 'unknown';
+  if (url.startsWith('https://graph.microsoft.com')) return 'graph';
+  const { GLPI_INSTANCE, CLEARPASS_INSTANCE } = process.env;
+  if (GLPI_INSTANCE && url.startsWith(GLPI_INSTANCE)) return 'glpi';
+  if (CLEARPASS_INSTANCE && url.startsWith(CLEARPASS_INSTANCE)) return 'clearpass';
+  return 'unknown';
+}
 
 // Configure global retry for all axios requests (3 retries, exponential backoff).
 // Only retry safe/idempotent methods on 5xx — never retry POST/DELETE (wipe, retire, delete).
@@ -29,13 +42,23 @@ axios.interceptors.request.use((config) => {
 });
 axios.interceptors.response.use(
   (response) => {
-    const ms = Date.now() - ((response.config as any)._startTime ?? 0);
+    const startTime = (response.config as any)._startTime as number | undefined;
+    const ms = startTime !== undefined ? Date.now() - startTime : undefined;
     logger.info({ method: response.config.method?.toUpperCase(), url: response.config.url, status: response.status, ms }, 'API response');
+    const method = response.config.method?.toUpperCase() ?? 'UNKNOWN';
+    const target = apiTarget(response.config.url);
+    if (ms !== undefined) externalApiRequestDuration.observe({ target, method, status: String(response.status) }, ms / 1000);
     return response;
   },
   (error) => {
-    const ms = Date.now() - ((error.config as any)?._startTime ?? 0);
+    const startTime = (error.config as any)?._startTime as number | undefined;
+    const ms = startTime !== undefined ? Date.now() - startTime : undefined;
     logger.error({ method: error.config?.method?.toUpperCase(), url: error.config?.url, status: error.response?.status, ms, data: error.response?.data }, 'API error');
+    const method = error.config?.method?.toUpperCase() ?? 'UNKNOWN';
+    const target = apiTarget(error.config?.url);
+    const status = String(error.response?.status ?? 'network_error');
+    if (ms !== undefined) externalApiRequestDuration.observe({ target, method, status }, ms / 1000);
+    externalApiErrorsTotal.inc({ target, method, status });
     return Promise.reject(error);
   }
 );

@@ -129,3 +129,27 @@ README's route-mapping table for how each route corresponds to a Jamf-tool equiv
 `CORS_HEADERS` (defined once in `utils.ts`, scoped to `https://${CLIENT_HOSTNAME}`) is spread
 into every `Response` in `server.ts` — new routes must do the same rather than constructing
 headers ad hoc.
+
+### Metrics (`server/metrics.ts`)
+
+Ported from the Jamf tool's identical module. A Prometheus `prom-client` `Registry`
+(`client.collectDefaultMetrics` plus process metrics) exports:
+
+- `http_request_duration_seconds` / `http_requests_total` — labeled `[method, route, status]`.
+  Every route handler in `server.ts` is wrapped `withMetrics(routeLabel, withAuth(...))`
+  (or bare for the unauthenticated `/api/config`), where `routeLabel` is the route's *static*
+  path pattern (e.g. `/api/devices/:search`) — never the interpolated `:param` value, to avoid
+  unbounded label cardinality from serial numbers/device IDs.
+- `external_api_request_duration_seconds` / `external_api_errors_total` — labeled
+  `[target, method, status]`, recorded by the shared axios interceptor in `utils.ts`. `target`
+  is resolved by `apiTarget(url)`: `'graph'` for any `https://graph.microsoft.com` URL (Graph's
+  base URLs are hardcoded constants, `GRAPH_BASE`/`GRAPH_BETA`, not env vars, so they're matched
+  directly rather than via `process.env`), `'glpi'`/`'clearpass'` via `GLPI_INSTANCE`/
+  `CLEARPASS_INSTANCE`, else `'unknown'`. Guards against `_startTime` being `undefined` on the
+  axios config in some error paths — skips recording duration entirely rather than observing
+  `Date.now() - undefined` (which silently coerces to `Date.now() - 0`, a multi-billion-second
+  garbage value that would corrupt the histogram).
+
+Scraped at `GET /metrics`, optionally gated by an `X-Metrics-Token` header when `METRICS_TOKEN`
+is set (unset means the endpoint is open — fine given it's loopback-only in production, same as
+every other app on that host).
